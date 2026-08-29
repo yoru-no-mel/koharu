@@ -28,7 +28,10 @@ pub use request::{InpaintingMask, Operation, Request, StopToken};
 pub use resources::{DeviceResources, ResourceSnapshot};
 pub use scope::{Bounds, Scope};
 pub use stage::Stage;
-pub use stages::{Flux2KleinConfig, KoharuLayoutRFDetrSeg2XLConfig, RoremMixedConfig};
+pub use stages::{
+    ComicTextAndBubbleDetectorConfig, ComicTextDetectorConfig, Flux2KleinConfig,
+    KoharuLayoutRFDetrSeg2XLConfig, PPDocLayoutV3Config, RoremMixedConfig,
+};
 
 use images::ImageCache;
 use model_cell::ModelCell;

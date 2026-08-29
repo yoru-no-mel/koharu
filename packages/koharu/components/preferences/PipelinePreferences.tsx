@@ -139,6 +139,20 @@ function ModelOptions({
           />
         </div>
       )
+    case 'comic-text-and-bubble-detector':
+    case 'pp-doclayout-v3':
+      return (
+        <NumberField
+          label={t('settings.pipeline.options.confidenceThreshold')}
+          value={model.confidence_threshold ?? null}
+          min={0}
+          max={1}
+          step={0.05}
+          onChange={(confidence_threshold) => onChange({ ...model, confidence_threshold })}
+        />
+      )
+    case 'comic-text-detector':
+      return null
     case 'flux2-klein':
       return (
         <TextField
@@ -163,6 +177,7 @@ function ModelOptions({
         </div>
       )
     case 'paddleocr-vl-1.6':
+    case 'paddleocr-vl-manga':
     case 'manga-ocr':
     case 'baberu-ocr':
     case 'hayai-ocr':

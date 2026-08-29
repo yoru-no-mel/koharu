@@ -9,7 +9,10 @@ use anyhow::Result;
 use async_trait::async_trait;
 use koharu_scene::{Edit, EntityId, Generation, Patch, ProducerId, Snapshot};
 
-pub use detection::KoharuLayoutRFDetrSeg2XLConfig;
+pub use detection::{
+    ComicTextAndBubbleDetectorConfig, ComicTextDetectorConfig, KoharuLayoutRFDetrSeg2XLConfig,
+    PPDocLayoutV3Config,
+};
 pub use inpainting::{Flux2KleinConfig, RoremMixedConfig};
 
 use crate::{Bounds, ImageCache, InpaintingMask, PipelineConfig, Stage};

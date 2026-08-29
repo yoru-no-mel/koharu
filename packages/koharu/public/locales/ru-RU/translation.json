@@ -384,6 +384,7 @@
       "modelLabel": "Модель «{{stage}}»",
       "options": {
         "bubbleThreshold": "Порог пузыря",
+        "confidenceThreshold": "Порог уверенности",
         "negativePrompt": "Негативный промпт",
         "panelThreshold": "Порог панели",
         "prompt": "Промпт",

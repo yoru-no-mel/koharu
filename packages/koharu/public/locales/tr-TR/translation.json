@@ -384,6 +384,7 @@
       "modelLabel": "{{stage}} modeli",
       "options": {
         "bubbleThreshold": "Konuşma balonu eşiği",
+        "confidenceThreshold": "Güven eşiği",
         "negativePrompt": "Negatif istem",
         "panelThreshold": "Panel eşiği",
         "prompt": "İstem",

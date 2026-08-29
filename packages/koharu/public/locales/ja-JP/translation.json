@@ -384,6 +384,7 @@
       "modelLabel": "{{stage}}モデル",
       "options": {
         "bubbleThreshold": "吹き出ししきい値",
+        "confidenceThreshold": "信頼度しきい値",
         "negativePrompt": "ネガティブプロンプト",
         "panelThreshold": "コマしきい値",
         "prompt": "プロンプト",

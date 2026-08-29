@@ -87,8 +87,20 @@ pub fn save(
 }
 
 fn remember_pipeline_profiles(config: &mut PipelineConfig) {
-    let koharu_pipeline::DetectionModel::KoharuLayoutRFDetrSeg2XL(settings) = &config.detection;
-    config.processor.koharu_layout_rfdetr_seg_2xl = Some(settings.clone());
+    match &config.detection {
+        koharu_pipeline::DetectionModel::KoharuLayoutRFDetrSeg2XL(settings) => {
+            config.processor.koharu_layout_rfdetr_seg_2xl = Some(settings.clone());
+        }
+        koharu_pipeline::DetectionModel::ComicTextAndBubbleDetector(settings) => {
+            config.processor.comic_text_and_bubble_detector = Some(settings.clone());
+        }
+        koharu_pipeline::DetectionModel::ComicTextDetector(settings) => {
+            config.processor.comic_text_detector = Some(settings.clone());
+        }
+        koharu_pipeline::DetectionModel::PPDocLayoutV3(settings) => {
+            config.processor.pp_doclayout_v3 = Some(settings.clone());
+        }
+    }
     if let koharu_pipeline::InpaintingModel::Flux2Klein(settings) = &config.inpainting {
         config.processor.flux2_klein = Some(settings.clone());
     }

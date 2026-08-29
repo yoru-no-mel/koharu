@@ -384,6 +384,7 @@
       "modelLabel": "Modelo de {{stage}}",
       "options": {
         "bubbleThreshold": "Limite de balão",
+        "confidenceThreshold": "Limite de confiança",
         "negativePrompt": "Prompt negativo",
         "panelThreshold": "Limite de quadro",
         "prompt": "Prompt",

@@ -104,6 +104,29 @@ class KoharuClient:
         except Exception as e:
             print(f"Could not read preferences ({e}) — continuing anyway.")
 
+    # ---- Preferences (model selection) ----
+    def set_pipeline_models(self, detection=None, ocr=None):
+        """POST /preferences with the current values except for the requested
+        detection/ocr model. Model configs (thresholds) come from the
+        server's stored processor profiles."""
+        r = self.session.get(self._url("/preferences"), timeout=30)
+        r.raise_for_status()
+        prefs = r.json()
+        pipeline = prefs["pipeline"]
+        if detection:
+            pipeline["detection"] = {"model": detection}
+        if ocr:
+            pipeline["ocr"] = {"model": ocr}
+        r = self.session.post(self._url("/preferences"),
+                              json={"pipeline": pipeline,
+                                    "providers": prefs["providers"],
+                                    "typesetting": prefs["typesetting"]},
+                              timeout=30)
+        r.raise_for_status()
+        selected = r.json()["pipeline"]
+        print(f"Selected detection={selected['detection']['model']} "
+              f"ocr={selected['ocr']['model']}")
+
     # ---- Projects ----
     def create_project(self, name: str):
         """POST /projects creates AND opens the project."""
@@ -333,6 +356,16 @@ def main():
                     help="Comma-separated subset of stages to run: "
                          f"{','.join(ALL_STAGES)} (default: all). Export always "
                          "renders whatever state the pages are in")
+    ap.add_argument("--detection", default=None,
+                    choices=["koharu-layout-rfdetr-seg-2xl", "comic-text-and-bubble-detector",
+                             "comic-text-detector", "pp-doclayout-v3"],
+                    help="Detection model to select on the server before running "
+                         "(default: leave the server's current selection)")
+    ap.add_argument("--ocr", default=None,
+                    choices=["paddleocr-vl-1.6", "paddleocr-vl-manga", "manga-ocr",
+                             "baberu-ocr", "hayai-ocr"],
+                    help="OCR model to select on the server before running "
+                         "(default: leave the server's current selection)")
     ap.add_argument("--format", choices=list(EXPORT_EXTS), default="webp",
                     help="Download format (default webp). jpeg/webp are lossy "
                          "at full resolution — much smaller files than png")
@@ -352,6 +385,8 @@ def main():
     base_url = f"http://{args.host}:{args.port}"
     client = KoharuClient(base_url)
     client.wait_ready(timeout=args.timeout)
+    if args.detection or args.ocr:
+        client.set_pipeline_models(detection=args.detection, ocr=args.ocr)
     client.show_preferences()
 
     if args.recursive:

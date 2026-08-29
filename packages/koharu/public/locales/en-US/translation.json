@@ -384,6 +384,7 @@
       "modelLabel": "{{stage}} model",
       "options": {
         "bubbleThreshold": "Bubble threshold",
+        "confidenceThreshold": "Confidence threshold",
         "negativePrompt": "Negative prompt",
         "panelThreshold": "Panel threshold",
         "prompt": "Prompt",

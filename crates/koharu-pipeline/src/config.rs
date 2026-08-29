@@ -3,7 +3,10 @@ use koharu_translator::{GenerationConfig, Language};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use specta::Type;
 
-use crate::stages::{Flux2KleinConfig, KoharuLayoutRFDetrSeg2XLConfig, RoremMixedConfig};
+use crate::stages::{
+    ComicTextAndBubbleDetectorConfig, ComicTextDetectorConfig, Flux2KleinConfig,
+    KoharuLayoutRFDetrSeg2XLConfig, PPDocLayoutV3Config, RoremMixedConfig,
+};
 
 #[derive(Clone, Debug, PartialEq, Type)]
 pub struct PipelineConfig {
@@ -58,9 +61,13 @@ impl Serialize for PipelineConfig {
     {
         let detection = match &self.detection {
             DetectionModel::KoharuLayoutRFDetrSeg2XL(_) => "koharu-layout-rfdetr-seg-2xl",
+            DetectionModel::ComicTextAndBubbleDetector(_) => "comic-text-and-bubble-detector",
+            DetectionModel::ComicTextDetector(_) => "comic-text-detector",
+            DetectionModel::PPDocLayoutV3(_) => "pp-doclayout-v3",
         };
         let ocr = match &self.ocr {
             OcrModel::PaddleOcrVl1_6 => "paddleocr-vl-1.6",
+            OcrModel::PaddleOcrVlManga => "paddleocr-vl-manga",
             OcrModel::MangaOcr => "manga-ocr",
             OcrModel::BaberuOcr => "baberu-ocr",
             OcrModel::HayaiOcr => "hayai-ocr",
@@ -72,10 +79,28 @@ impl Serialize for PipelineConfig {
             InpaintingModel::RoremMixed(_) => "rorem-mixed",
         };
         let mut processor = self.processor.clone();
-        let DetectionModel::KoharuLayoutRFDetrSeg2XL(config) = &self.detection;
-        processor
-            .koharu_layout_rfdetr_seg_2xl
-            .get_or_insert_with(|| config.clone());
+        match &self.detection {
+            DetectionModel::KoharuLayoutRFDetrSeg2XL(config) => {
+                processor
+                    .koharu_layout_rfdetr_seg_2xl
+                    .get_or_insert_with(|| config.clone());
+            }
+            DetectionModel::ComicTextAndBubbleDetector(config) => {
+                processor
+                    .comic_text_and_bubble_detector
+                    .get_or_insert_with(|| config.clone());
+            }
+            DetectionModel::ComicTextDetector(config) => {
+                processor
+                    .comic_text_detector
+                    .get_or_insert_with(|| config.clone());
+            }
+            DetectionModel::PPDocLayoutV3(config) => {
+                processor
+                    .pp_doclayout_v3
+                    .get_or_insert_with(|| config.clone());
+            }
+        }
         match &self.inpainting {
             InpaintingModel::Flux2Klein(config) => {
                 processor.flux2_klein.get_or_insert_with(|| config.clone());
@@ -115,6 +140,21 @@ impl<'de> Deserialize<'de> for PipelineConfig {
                     .clone()
                     .unwrap_or_default(),
             ),
+            "comic-text-and-bubble-detector" => DetectionModel::ComicTextAndBubbleDetector(
+                file.processor
+                    .comic_text_and_bubble_detector
+                    .clone()
+                    .unwrap_or_default(),
+            ),
+            "comic-text-detector" => DetectionModel::ComicTextDetector(
+                file.processor
+                    .comic_text_detector
+                    .clone()
+                    .unwrap_or_default(),
+            ),
+            "pp-doclayout-v3" => DetectionModel::PPDocLayoutV3(
+                file.processor.pp_doclayout_v3.clone().unwrap_or_default(),
+            ),
             model => {
                 return Err(serde::de::Error::custom(format!(
                     "unsupported detection model {model}"
@@ -123,6 +163,7 @@ impl<'de> Deserialize<'de> for PipelineConfig {
         };
         let ocr = match file.ocr.model.as_str() {
             "paddleocr-vl-1.6" => OcrModel::PaddleOcrVl1_6,
+            "paddleocr-vl-manga" => OcrModel::PaddleOcrVlManga,
             "manga-ocr" => OcrModel::MangaOcr,
             "baberu-ocr" => OcrModel::BaberuOcr,
             "hayai-ocr" => OcrModel::HayaiOcr,
@@ -197,16 +238,36 @@ impl PipelineConfig {
     }
 
     pub fn detection(&self) -> Result<DetectionModel> {
-        match &self.detection {
+        Ok(match &self.detection {
             DetectionModel::KoharuLayoutRFDetrSeg2XL(config) => {
-                Ok(DetectionModel::KoharuLayoutRFDetrSeg2XL(
+                DetectionModel::KoharuLayoutRFDetrSeg2XL(
                     self.processor
                         .koharu_layout_rfdetr_seg_2xl
                         .clone()
                         .unwrap_or_else(|| config.clone()),
-                ))
+                )
             }
-        }
+            DetectionModel::ComicTextAndBubbleDetector(config) => {
+                DetectionModel::ComicTextAndBubbleDetector(
+                    self.processor
+                        .comic_text_and_bubble_detector
+                        .clone()
+                        .unwrap_or_else(|| config.clone()),
+                )
+            }
+            DetectionModel::ComicTextDetector(config) => DetectionModel::ComicTextDetector(
+                self.processor
+                    .comic_text_detector
+                    .clone()
+                    .unwrap_or_else(|| config.clone()),
+            ),
+            DetectionModel::PPDocLayoutV3(config) => DetectionModel::PPDocLayoutV3(
+                self.processor
+                    .pp_doclayout_v3
+                    .clone()
+                    .unwrap_or_else(|| config.clone()),
+            ),
+        })
     }
 
     pub fn inpainting(&self) -> Result<InpaintingModel> {
@@ -234,6 +295,7 @@ impl PipelineConfig {
         if !matches!(
             self.ocr,
             OcrModel::PaddleOcrVl1_6
+                | OcrModel::PaddleOcrVlManga
                 | OcrModel::MangaOcr
                 | OcrModel::BaberuOcr
                 | OcrModel::HayaiOcr
@@ -249,6 +311,12 @@ impl PipelineConfig {
 pub struct ProcessorConfig {
     #[serde(rename = "koharu-layout-rfdetr-seg-2xl")]
     pub koharu_layout_rfdetr_seg_2xl: Option<KoharuLayoutRFDetrSeg2XLConfig>,
+    #[serde(rename = "comic-text-and-bubble-detector")]
+    pub comic_text_and_bubble_detector: Option<ComicTextAndBubbleDetectorConfig>,
+    #[serde(rename = "comic-text-detector")]
+    pub comic_text_detector: Option<ComicTextDetectorConfig>,
+    #[serde(rename = "pp-doclayout-v3")]
+    pub pp_doclayout_v3: Option<PPDocLayoutV3Config>,
     #[serde(rename = "flux2-klein")]
     pub flux2_klein: Option<Flux2KleinConfig>,
     #[serde(rename = "rorem-mixed")]
@@ -260,6 +328,12 @@ pub struct ProcessorConfig {
 pub enum DetectionModel {
     #[serde(rename = "koharu-layout-rfdetr-seg-2xl")]
     KoharuLayoutRFDetrSeg2XL(KoharuLayoutRFDetrSeg2XLConfig),
+    #[serde(rename = "comic-text-and-bubble-detector")]
+    ComicTextAndBubbleDetector(ComicTextAndBubbleDetectorConfig),
+    #[serde(rename = "comic-text-detector")]
+    ComicTextDetector(ComicTextDetectorConfig),
+    #[serde(rename = "pp-doclayout-v3")]
+    PPDocLayoutV3(PPDocLayoutV3Config),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
@@ -267,6 +341,8 @@ pub enum DetectionModel {
 pub enum OcrModel {
     #[serde(rename = "paddleocr-vl-1.6")]
     PaddleOcrVl1_6,
+    #[serde(rename = "paddleocr-vl-manga")]
+    PaddleOcrVlManga,
     #[serde(rename = "manga-ocr")]
     MangaOcr,
     #[serde(rename = "baberu-ocr")]

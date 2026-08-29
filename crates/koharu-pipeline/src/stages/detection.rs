@@ -17,10 +17,13 @@ use imageproc::{
     geometry::{approximate_polygon_dp, arc_length, contour_area},
     morphology::{close, dilate},
 };
+use koharu_ml::comic_text_bubble_detector::RTDetrV2Detection;
+use koharu_ml::comic_text_detector::ComicTextDetector;
 use koharu_ml::koharu_layout_rfdetr_seg_2xl::{
     KoharuLayoutDetection, KoharuLayoutDetections, KoharuLayoutMask, KoharuLayoutRFDetrSeg2XL,
     KoharuLayoutThresholds,
 };
+use koharu_ml::pp_doclayout_v3::PPDocLayoutV3;
 use koharu_scene::{
     AssetInput, AssetMetadata, AssetRole, At, BubbleRegion, DetectionAnalysis, DetectionLabel,
     EntityId, EntityOrigin, FitsTo, FlowsIn, Generation, Geometry, Inside, Origin, PanelRegion,
@@ -57,6 +60,60 @@ pub struct KoharuLayoutRFDetrSeg2XLConfig {
     pub panel_threshold: Option<f32>,
 }
 
+/// Confidence threshold shared by the single-threshold detectors.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default)]
+pub struct ComicTextAndBubbleDetectorConfig {
+    pub confidence_threshold: Option<f32>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default)]
+pub struct ComicTextDetectorConfig {}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default)]
+pub struct PPDocLayoutV3Config {
+    pub confidence_threshold: Option<f32>,
+}
+
+impl ComicTextAndBubbleDetectorConfig {
+    const DEFAULT_CONFIDENCE: f32 = 0.5;
+
+    fn confidence(&self) -> f32 {
+        self.confidence_threshold
+            .unwrap_or(Self::DEFAULT_CONFIDENCE)
+    }
+}
+
+impl PPDocLayoutV3Config {
+    const DEFAULT_CONFIDENCE: f32 = 0.5;
+
+    fn confidence(&self) -> f32 {
+        self.confidence_threshold.unwrap_or(Self::DEFAULT_CONFIDENCE)
+    }
+}
+
+/// Sanity-clamps a user-stored threshold preference, mirroring the treatment
+/// of the RF-DETR per-label thresholds.
+fn validated_threshold(value: Option<f32>, label: &str) -> Option<f32> {
+    match value {
+        Some(threshold) if threshold.is_finite() && (0.0..=1.0).contains(&threshold) => {
+            Some(threshold)
+        }
+        Some(threshold) => {
+            tracing::warn!(
+                label = label,
+                threshold = %threshold,
+                "confidence threshold is not between zero and one; using the model default"
+            );
+            None
+        }
+        None => None,
+    }
+}
+
+
 pub(super) struct Processor {
     config: DetectionModel,
     device: koharu_ml::Device,
@@ -65,23 +122,26 @@ pub(super) struct Processor {
 
 impl Processor {
     pub(super) fn new(mut config: DetectionModel, device: koharu_ml::Device) -> Self {
-        let DetectionModel::KoharuLayoutRFDetrSeg2XL(settings) = &mut config;
-        for (name, value) in [
-            ("text", &mut settings.text_threshold),
-            ("bubble", &mut settings.bubble_threshold),
-            ("panel", &mut settings.panel_threshold),
-        ] {
-            // A stored threshold is only a preference; refusing to start over one
-            // leaves the application unusable until the file is edited by hand.
-            if let Some(threshold) = *value
-                && !(threshold.is_finite() && (0.0..=1.0).contains(&threshold))
-            {
-                tracing::warn!(
-                    label = name,
-                    threshold = %threshold,
-                    "confidence threshold is not between zero and one; using the model default"
-                );
-                *value = None;
+        // A stored threshold is only a preference; refusing to start over one
+        // leaves the application unusable until the file is edited by hand.
+        match &mut config {
+            DetectionModel::KoharuLayoutRFDetrSeg2XL(settings) => {
+                for (name, value) in [
+                    ("text", &mut settings.text_threshold),
+                    ("bubble", &mut settings.bubble_threshold),
+                    ("panel", &mut settings.panel_threshold),
+                ] {
+                    *value = validated_threshold(*value, name);
+                }
+            }
+            DetectionModel::ComicTextAndBubbleDetector(settings) => {
+                settings.confidence_threshold =
+                    validated_threshold(settings.confidence_threshold, "confidence");
+            }
+            DetectionModel::ComicTextDetector(_) => {}
+            DetectionModel::PPDocLayoutV3(settings) => {
+                settings.confidence_threshold =
+                    validated_threshold(settings.confidence_threshold, "confidence");
             }
         }
 
@@ -96,7 +156,12 @@ impl Processor {
 #[async_trait]
 impl StageProcessor for Processor {
     fn model(&self) -> &'static str {
-        MODEL_NAME
+        match &self.config {
+            DetectionModel::KoharuLayoutRFDetrSeg2XL(_) => MODEL_NAME,
+            DetectionModel::ComicTextAndBubbleDetector(_) => "comic-text-and-bubble-detector",
+            DetectionModel::ComicTextDetector(_) => "comic-text-detector",
+            DetectionModel::PPDocLayoutV3(_) => "pp-doclayout-v3",
+        }
     }
 
     fn skip(&self, input: &StageInput) -> Result<bool> {
@@ -134,23 +199,59 @@ impl StageProcessor for Processor {
     }
 }
 
-struct Model {
-    network: Arc<Mutex<KoharuLayoutRFDetrSeg2XL>>,
-    thresholds: KoharuLayoutThresholds,
+enum Model {
+    KoharuLayout {
+        network: Arc<Mutex<KoharuLayoutRFDetrSeg2XL>>,
+        thresholds: KoharuLayoutThresholds,
+    },
+    ComicTextBubble {
+        network: Arc<Mutex<koharu_ml::comic_text_bubble_detector::RTDetrV2Detection>>,
+        confidence: f32,
+    },
+    ComicText {
+        network: Arc<Mutex<koharu_ml::comic_text_detector::ComicTextDetector>>,
+    },
+    PPDocLayout {
+        network: Arc<Mutex<koharu_ml::pp_doclayout_v3::PPDocLayoutV3>>,
+        confidence: f32,
+    },
 }
 
 impl Model {
     async fn load(device: koharu_ml::Device, config: &DetectionModel) -> Result<Self> {
-        let DetectionModel::KoharuLayoutRFDetrSeg2XL(config) = config;
-        let network = KoharuLayoutRFDetrSeg2XL::load(device).await?;
-        let mut thresholds = network.recommended_thresholds();
-        thresholds.text = config.text_threshold.unwrap_or(thresholds.text);
-        thresholds.bubble = config.bubble_threshold.unwrap_or(thresholds.bubble);
-        thresholds.panel = config.panel_threshold.unwrap_or(thresholds.panel);
-        Ok(Self {
-            network: Arc::new(Mutex::new(network)),
-            thresholds,
-        })
+        match config {
+            DetectionModel::KoharuLayoutRFDetrSeg2XL(config) => {
+                let network = KoharuLayoutRFDetrSeg2XL::load(device).await?;
+                let mut thresholds = network.recommended_thresholds();
+                thresholds.text = config.text_threshold.unwrap_or(thresholds.text);
+                thresholds.bubble = config.bubble_threshold.unwrap_or(thresholds.bubble);
+                thresholds.panel = config.panel_threshold.unwrap_or(thresholds.panel);
+                Ok(Self::KoharuLayout {
+                    network: Arc::new(Mutex::new(network)),
+                    thresholds,
+                })
+            }
+            DetectionModel::ComicTextAndBubbleDetector(config) => Ok(Self::ComicTextBubble {
+                network: Arc::new(Mutex::new(RTDetrV2Detection::load(device).await?)),
+                confidence: config.confidence(),
+            }),
+            DetectionModel::ComicTextDetector(_) => Ok(Self::ComicText {
+                network: Arc::new(Mutex::new(ComicTextDetector::load(device).await?)),
+            }),
+            DetectionModel::PPDocLayoutV3(config) => Ok(Self::PPDocLayout {
+                network: Arc::new(Mutex::new(PPDocLayoutV3::load(device).await?)),
+                confidence: config.confidence(),
+            }),
+        }
+    }
+
+    fn model_id(&self) -> &'static str {
+        match self {
+            Self::KoharuLayout { .. } => MODEL_ID,
+            Self::ComicTextBubble { .. } => "ogkalu/comic-text-and-bubble-detector",
+            Self::ComicText { .. } => "mayocream/comic-text-detector",
+            Self::PPDocLayout { .. } => "PaddlePaddle/PP-DocLayoutV3_safetensors",
+        }
     }
 
     async fn run(&self, input: StageInput) -> Result<koharu_scene::Patch> {
@@ -161,21 +262,264 @@ impl Model {
             .await?
             .ok_or_else(|| anyhow!("page {page} has no source image"))?;
         let output = self.detect(image.clone()).await?;
-        build_patch(&input, &image, output, &generation(PRODUCER, MODEL_ID)?).await
+        build_patch(
+            &input,
+            &image,
+            output,
+            &generation(PRODUCER, self.model_id())?,
+        )
+        .await
     }
 
     async fn detect(&self, image: Arc<DynamicImage>) -> Result<KoharuLayoutDetections> {
-        let network = self.network.clone();
-        let thresholds = self.thresholds;
-        tokio::task::spawn_blocking(move || {
-            let network = network
-                .lock()
-                .map_err(|_| anyhow!("layout model lock is poisoned"))?;
-            network.inference_with_thresholds(&image, thresholds)
-        })
-        .await
-        .context("layout detection task panicked")?
+        match self {
+            Self::KoharuLayout { network, thresholds } => {
+                let thresholds = *thresholds;
+                blocking(network.clone(), move |network| {
+                    network.inference_with_thresholds(&image, thresholds)
+                })
+                .await
+            }
+            Self::ComicTextBubble { network, confidence } => {
+                let confidence = *confidence;
+                blocking(network.clone(), move |network| {
+                    comic_text_bubble_detections(network, &image, confidence)
+                })
+                .await
+            }
+            Self::ComicText { network } => {
+                blocking(network.clone(), move |network| {
+                    comic_text_detector_detections(network, &image)
+                })
+                .await
+            }
+            Self::PPDocLayout { network, confidence } => {
+                let confidence = *confidence;
+                blocking(network.clone(), move |network| {
+                    pp_doclayout_v3_detections(network, &image, confidence)
+                })
+                .await
+            }
+        }
     }
+}
+
+/// Runs a blocking model call on the shared network handle.
+async fn blocking<M, T, F>(network: Arc<Mutex<M>>, inference: F) -> Result<T>
+where
+    M: Send + 'static,
+    T: Send + 'static,
+    F: FnOnce(&mut M) -> Result<T> + Send + 'static,
+{
+    tokio::task::spawn_blocking(move || {
+        let mut network = network
+            .lock()
+            .map_err(|_| anyhow!("detection model lock is poisoned"))?;
+        inference(&mut network)
+    })
+    .await
+    .context("detection task panicked")?
+}
+
+/// Maps RT-DETR comic text/bubble output onto the shared detection format.
+/// Bubbles repeat across their member text blocks, so the union of the
+/// observed bubble boxes becomes the bubble set.
+fn comic_text_bubble_detections(
+    network: &RTDetrV2Detection,
+    image: &DynamicImage,
+    confidence: f32,
+) -> Result<KoharuLayoutDetections> {
+    let blocks = network.inference(image, confidence)?;
+    let mut detections: Vec<KoharuLayoutDetection> = Vec::with_capacity(blocks.len() * 2);
+    let mut bubbles: Vec<[i32; 4]> = Vec::new();
+    for block in &blocks {
+        detections.push(KoharuLayoutDetection {
+            label_id: 1,
+            label: "text".to_owned(),
+            score: 1.0,
+            bbox: [
+                block.xyxy[0] as f32,
+                block.xyxy[1] as f32,
+                block.xyxy[2] as f32,
+                block.xyxy[3] as f32,
+            ],
+            area: box_area(&block.xyxy),
+            mask: bbox_mask(&block.xyxy, image.width(), image.height()),
+        });
+        if let Some(bubble) = block.bubble_xyxy
+            && !bubbles.contains(&bubble)
+        {
+            bubbles.push(bubble);
+        }
+    }
+    for bubble in &bubbles {
+        detections.push(KoharuLayoutDetection {
+            label_id: 0,
+            label: "bubble".to_owned(),
+            score: 1.0,
+            bbox: [
+                bubble[0] as f32,
+                bubble[1] as f32,
+                bubble[2] as f32,
+                bubble[3] as f32,
+            ],
+            area: box_area(bubble),
+            mask: bbox_mask(bubble, image.width(), image.height()),
+        });
+    }
+    Ok(KoharuLayoutDetections {
+        image_width: image.width(),
+        image_height: image.height(),
+        detections,
+    })
+}
+
+/// Maps comic-text-detector output onto the shared detection format. The
+/// model yields a full-page text-stroke mask, cropped per text block so the
+/// existing mask-based inpainting path keeps working unchanged.
+fn comic_text_detector_detections(
+    network: &ComicTextDetector,
+    image: &DynamicImage,
+) -> Result<KoharuLayoutDetections> {
+    let (mask, blocks) = network.inference(image)?;
+    let detections = blocks
+        .iter()
+        .map(|block| {
+            let mask = crop_mask(&mask, block.xyxy)
+                .unwrap_or_else(|| bbox_mask(&block.xyxy, image.width(), image.height()));
+            KoharuLayoutDetection {
+                label_id: 1,
+                label: "text".to_owned(),
+                score: 1.0,
+                bbox: [
+                    block.xyxy[0] as f32,
+                    block.xyxy[1] as f32,
+                    block.xyxy[2] as f32,
+                    block.xyxy[3] as f32,
+                ],
+                area: box_area(&block.xyxy),
+                mask,
+            }
+        })
+        .collect();
+    Ok(KoharuLayoutDetections {
+        image_width: image.width(),
+        image_height: image.height(),
+        detections,
+    })
+}
+
+/// Maps PP-DocLayoutV3 output onto the shared detection format. The model is
+/// a document-layout detector: text-like labels become text regions and
+/// everything else (figures, tables, seals) is dropped.
+fn pp_doclayout_v3_detections(
+    network: &PPDocLayoutV3,
+    image: &DynamicImage,
+    confidence: f32,
+) -> Result<KoharuLayoutDetections> {
+    const TEXT_LABELS: &[&str] = &[
+        "text",
+        "document_block",
+        "content",
+        "abstract",
+        "paragraph_title",
+        "title",
+        "number",
+    ];
+    let output = network.inference(image, confidence)?;
+    let detections = output
+        .regions
+        .iter()
+        .filter(|region| TEXT_LABELS.contains(&region.label.as_str()))
+        .map(|region| KoharuLayoutDetection {
+            label_id: region.label_id,
+            label: "text".to_owned(),
+            score: region.score,
+            bbox: region.bbox,
+            area: box_area_f32(region.bbox),
+            mask: bbox_mask_f32(region.bbox, image.width(), image.height()),
+        })
+        .collect();
+    Ok(KoharuLayoutDetections {
+        image_width: image.width(),
+        image_height: image.height(),
+        detections,
+    })
+}
+
+fn box_area([left, top, right, bottom]: &[i32; 4]) -> u32 {
+    box_area_f32([*left as f32, *top as f32, *right as f32, *bottom as f32])
+}
+
+fn box_area_f32([left, top, right, bottom]: [f32; 4]) -> u32 {
+    let width = (right - left).max(0.0);
+    let height = (bottom - top).max(0.0);
+    (width as u32).saturating_mul(height as u32)
+}
+
+/// A solid mask covering exactly `bbox`, clamped to the image bounds.
+fn bbox_mask(bbox: &[i32; 4], image_width: u32, image_height: u32) -> KoharuLayoutMask {
+    bbox_mask_f32(
+        [
+            bbox[0] as f32,
+            bbox[1] as f32,
+            bbox[2] as f32,
+            bbox[3] as f32,
+        ],
+        image_width,
+        image_height,
+    )
+}
+
+fn bbox_mask_f32(
+    [left, top, right, bottom]: [f32; 4],
+    image_width: u32,
+    image_height: u32,
+) -> KoharuLayoutMask {
+    let x = (left.floor().max(0.0) as u32).min(image_width);
+    let y = (top.floor().max(0.0) as u32).min(image_height);
+    let width = (right.ceil().max(0.0) as u32).min(image_width).saturating_sub(x);
+    let height = (bottom
+        .ceil()
+        .max(0.0) as u32)
+        .min(image_height)
+        .saturating_sub(y);
+    KoharuLayoutMask {
+        x,
+        y,
+        width,
+        height,
+        pixels: vec![255; (width as usize).saturating_mul(height as usize)],
+    }
+}
+
+/// Crops a full-page text-stroke mask down to `bbox`.
+fn crop_mask(
+    mask: &image::GrayImage,
+    [left, top, right, bottom]: [i32; 4],
+) -> Option<KoharuLayoutMask> {
+    let image_width = mask.width();
+    let image_height = mask.height();
+    let x = (left.max(0) as u32).min(image_width);
+    let y = (top.max(0) as u32).min(image_height);
+    let width = (right.max(0) as u32).min(image_width).saturating_sub(x);
+    let height = (bottom.max(0) as u32).min(image_height).saturating_sub(y);
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let mut pixels = Vec::with_capacity((width as usize) * (height as usize));
+    for row in y..y + height {
+        for column in x..x + width {
+            pixels.push(mask.get_pixel(column, row).0[0]);
+        }
+    }
+    Some(KoharuLayoutMask {
+        x,
+        y,
+        width,
+        height,
+        pixels,
+    })
 }
 
 struct DetectedRegion<'a> {
@@ -1862,7 +2206,9 @@ mod tests {
             koharu_ml::Device::cpu(),
         );
 
-        let DetectionModel::KoharuLayoutRFDetrSeg2XL(settings) = &processor.config;
+        let DetectionModel::KoharuLayoutRFDetrSeg2XL(settings) = &processor.config else {
+            unreachable!("the processor was constructed with the RF-DETR model")
+        };
         assert_eq!(settings.text_threshold, None);
         assert_eq!(settings.bubble_threshold, None);
         assert_eq!(settings.panel_threshold, Some(0.55));

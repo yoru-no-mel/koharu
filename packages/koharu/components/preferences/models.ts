@@ -11,13 +11,22 @@ export type ModelStage = Exclude<Stage, 'translation'>
 export type ModelName = PipelineModel['model']
 
 export const modelOptions = {
-  detection: ['koharu-layout-rfdetr-seg-2xl'],
-  ocr: ['paddleocr-vl-1.6', 'manga-ocr', 'baberu-ocr', 'hayai-ocr'],
+  detection: [
+    'koharu-layout-rfdetr-seg-2xl',
+    'comic-text-and-bubble-detector',
+    'comic-text-detector',
+    'pp-doclayout-v3',
+  ],
+  ocr: ['paddleocr-vl-1.6', 'paddleocr-vl-manga', 'manga-ocr', 'baberu-ocr', 'hayai-ocr'],
   inpainting: ['lama', 'aot-inpainting', 'flux2-klein', 'rorem-mixed'],
 } satisfies Record<ModelStage, ModelName[]>
 
 export const modelNames: Record<ModelName, string> = {
   'koharu-layout-rfdetr-seg-2xl': 'Koharu Layout RF-DETR Seg 2XL',
+  'comic-text-and-bubble-detector': 'Comic Text and Bubble Detector',
+  'comic-text-detector': 'Comic Text Detector',
+  'pp-doclayout-v3': 'PP-DocLayoutV3',
+  'paddleocr-vl-manga': 'PaddleOCR-VL For Manga',
   'paddleocr-vl-1.6': 'PaddleOCR-VL 1.6',
   'manga-ocr': 'Manga OCR',
   'baberu-ocr': 'Baberu OCR',
@@ -32,7 +41,13 @@ export function defaultModel(model: ModelName): PipelineModel {
   switch (model) {
     case 'koharu-layout-rfdetr-seg-2xl':
       return { model, text_threshold: null, bubble_threshold: null, panel_threshold: null }
+    case 'comic-text-and-bubble-detector':
+    case 'pp-doclayout-v3':
+      return { model, confidence_threshold: null }
+    case 'comic-text-detector':
+      return { model }
     case 'paddleocr-vl-1.6':
+    case 'paddleocr-vl-manga':
     case 'manga-ocr':
     case 'baberu-ocr':
     case 'hayai-ocr':
@@ -76,6 +91,18 @@ export function replaceStage(
                   panel_threshold: model.panel_threshold ?? null,
                 }
               : (config.processor?.['koharu-layout-rfdetr-seg-2xl'] ?? null),
+          'comic-text-and-bubble-detector':
+            model.model === 'comic-text-and-bubble-detector'
+              ? { confidence_threshold: model.confidence_threshold ?? null }
+              : (config.processor?.['comic-text-and-bubble-detector'] ?? null),
+          'comic-text-detector':
+            model.model === 'comic-text-detector'
+              ? {}
+              : (config.processor?.['comic-text-detector'] ?? null),
+          'pp-doclayout-v3':
+            model.model === 'pp-doclayout-v3'
+              ? { confidence_threshold: model.confidence_threshold ?? null }
+              : (config.processor?.['pp-doclayout-v3'] ?? null),
         },
       }
     case 'ocr':

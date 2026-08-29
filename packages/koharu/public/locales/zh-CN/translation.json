@@ -384,6 +384,7 @@
       "modelLabel": "{{stage}}模型",
       "options": {
         "bubbleThreshold": "气泡阈值",
+        "confidenceThreshold": "置信度阈值",
         "negativePrompt": "负面提示词",
         "panelThreshold": "分镜阈值",
         "prompt": "提示词",

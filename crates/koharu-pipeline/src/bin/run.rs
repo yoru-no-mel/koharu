@@ -10,8 +10,9 @@ use anyhow::{Context as _, Result};
 use clap::{Parser, ValueEnum};
 use koharu_config::Config;
 use koharu_pipeline::{
-    Committer, DetectionModel, Flux2KleinConfig, InpaintingModel, KoharuLayoutRFDetrSeg2XLConfig,
-    OcrModel, Operation, Pipeline, PipelineConfig, Progress, Request, RoremMixedConfig, Scope,
+    ComicTextAndBubbleDetectorConfig, ComicTextDetectorConfig, Committer, DetectionModel,
+    Flux2KleinConfig, InpaintingModel, KoharuLayoutRFDetrSeg2XLConfig, OcrModel, Operation,
+    Pipeline, PipelineConfig, PPDocLayoutV3Config, Progress, Request, RoremMixedConfig, Scope,
     StageOutput, TranslationConfig,
 };
 use koharu_rasterizer::{RasterOptions, Rasterizer};
@@ -63,6 +64,12 @@ impl Committer for SessionCommitter<'_> {
 enum DetectionChoice {
     #[value(name = "koharu-layout-rfdetr-seg-2xl")]
     KoharuLayoutRFDetrSeg2XL,
+    #[value(name = "comic-text-and-bubble-detector")]
+    ComicTextAndBubbleDetector,
+    #[value(name = "comic-text-detector")]
+    ComicTextDetector,
+    #[value(name = "pp-doclayout-v3")]
+    PPDocLayoutV3,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -75,6 +82,8 @@ enum OcrChoice {
     BaberuOcr,
     #[value(name = "hayai-ocr")]
     HayaiOcr,
+    #[value(name = "paddleocr-vl-manga")]
+    PaddleOcrVlManga,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -98,12 +107,24 @@ impl Arguments {
                         KoharuLayoutRFDetrSeg2XLConfig::default(),
                     )
                 }
+                DetectionChoice::ComicTextAndBubbleDetector => {
+                    DetectionModel::ComicTextAndBubbleDetector(
+                        ComicTextAndBubbleDetectorConfig::default(),
+                    )
+                }
+                DetectionChoice::ComicTextDetector => {
+                    DetectionModel::ComicTextDetector(ComicTextDetectorConfig::default())
+                }
+                DetectionChoice::PPDocLayoutV3 => {
+                    DetectionModel::PPDocLayoutV3(PPDocLayoutV3Config::default())
+                }
             },
             ocr: match self.ocr {
                 OcrChoice::PaddleOcrVl1_6 => OcrModel::PaddleOcrVl1_6,
                 OcrChoice::MangaOcr => OcrModel::MangaOcr,
                 OcrChoice::BaberuOcr => OcrModel::BaberuOcr,
                 OcrChoice::HayaiOcr => OcrModel::HayaiOcr,
+                OcrChoice::PaddleOcrVlManga => OcrModel::PaddleOcrVlManga,
             },
             translation: TranslationConfig {
                 model: ModelSelection {

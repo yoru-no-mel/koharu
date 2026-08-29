@@ -384,6 +384,7 @@
       "modelLabel": "{{stage}} 모델",
       "options": {
         "bubbleThreshold": "말풍선 임곗값",
+        "confidenceThreshold": "신뢰도 임곗값",
         "negativePrompt": "네거티브 프롬프트",
         "panelThreshold": "패널 임곗값",
         "prompt": "프롬프트",

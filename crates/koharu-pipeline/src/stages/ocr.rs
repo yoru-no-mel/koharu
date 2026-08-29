@@ -7,7 +7,8 @@ use async_trait::async_trait;
 use image::DynamicImage;
 use koharu_ml::{
     baberu_ocr::BaberuOcr, hayai_ocr::HayaiOcr, manga_ocr::MangaOcr,
-    paddle_ocr_vl::PaddleOCRVLTask, paddle_ocr_vl_quantized::PaddleOCRVLQuantized,
+    paddle_ocr_vl::PaddleOCRVLTask, paddle_ocr_vl::PaddleOCRVLManga,
+    paddle_ocr_vl_quantized::PaddleOCRVLQuantized,
 };
 use koharu_scene::{
     Authored, EntityId, Geometry, LanguageTag, OcrAnalysis, Origin, RecognizedFrom, Region,
@@ -40,6 +41,7 @@ impl StageProcessor for Processor {
             OcrModel::BaberuOcr => "baberu-ocr",
             OcrModel::HayaiOcr => "hayai-ocr",
             OcrModel::PaddleOcrVl1_6 => "paddleocr-vl-1.6",
+            OcrModel::PaddleOcrVlManga => "paddleocr-vl-manga",
         }
     }
 
@@ -69,6 +71,7 @@ enum Model {
     Baberu(Arc<Mutex<BaberuOcr>>),
     Hayai(Arc<Mutex<HayaiOcr>>),
     Paddle(Arc<Mutex<PaddleOCRVLQuantized>>),
+    PaddleManga(Arc<Mutex<PaddleOCRVLManga>>),
 }
 
 impl Model {
@@ -86,6 +89,9 @@ impl Model {
             OcrModel::PaddleOcrVl1_6 => Ok(Self::Paddle(Arc::new(Mutex::new(
                 PaddleOCRVLQuantized::load(device).await?,
             )))),
+            OcrModel::PaddleOcrVlManga => Ok(Self::PaddleManga(Arc::new(Mutex::new(
+                PaddleOCRVLManga::load(device).await?,
+            )))),
         }
     }
 
@@ -95,6 +101,7 @@ impl Model {
             Self::Baberu(_) => "baberu-ocr",
             Self::Hayai(_) => "hayai-ocr",
             Self::Paddle(_) => "paddleocr-vl-1.6",
+            Self::PaddleManga(_) => "paddleocr-vl-manga",
         };
         let page = input.page;
         let mut targets = Vec::new();
@@ -160,6 +167,12 @@ impl Model {
                 .await?
             }
             Self::Paddle(model) => {
+                infer_text(model.clone(), targets, |model, image| {
+                    Ok(model.inference(image, PaddleOCRVLTask::Ocr)?.text)
+                })
+                .await?
+            }
+            Self::PaddleManga(model) => {
                 infer_text(model.clone(), targets, |model, image| {
                     Ok(model.inference(image, PaddleOCRVLTask::Ocr)?.text)
                 })

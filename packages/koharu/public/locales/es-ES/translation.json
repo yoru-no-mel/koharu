@@ -384,6 +384,7 @@
       "modelLabel": "Modelo de {{stage}}",
       "options": {
         "bubbleThreshold": "Umbral de bocadillo",
+        "confidenceThreshold": "Umbral de confianza",
         "negativePrompt": "Indicación negativa",
         "panelThreshold": "Umbral de viñeta",
         "prompt": "Indicación",
