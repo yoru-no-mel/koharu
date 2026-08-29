@@ -227,11 +227,11 @@ class KoharuClient:
         raise RuntimeError("Event stream ended without a terminal job state")
 
     # ---- Export (download) ----
-    def export_one(self, page_id, fmt, attempts=4, backoff=5):
-        """GET one rendered page, retrying transient 5xx failures. The
-        server re-attempts GPU rasterizer initialization on every request,
-        so a 'no WGPU adapter' 500 right after server start (while the ML
-        models are still loading onto the GPU) usually clears in seconds."""
+    def export_one(self, page_id, fmt, attempts=6, backoff=10):
+        """GET one rendered page, retrying transient 5xx failures. The ML
+        models keep ~6.5 GB of the GPU's 8 GB VRAM loaded after a pipeline
+        run, so the rasterizer's wgpu device creation can fail while the
+        GPU is under memory pressure; it usually clears within a minute."""
         for attempt in range(1, attempts + 1):
             r = self.session.get(
                 self._url(f"/pages/{page_id}/export"),
