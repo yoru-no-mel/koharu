@@ -46,7 +46,7 @@ koharu-secrets = { path = "crates/koharu-secrets" }
 # external dependencies
 alphanumeric-sort = "1.5.8"
 arc-swap = "1.9.2"
-axum = "0.8"
+axum = { version = "0.8", features = ["multipart"] }
 hayro = "0.7.1"
 image = "0.25.10"
 webp = { version = "0.3.1" }

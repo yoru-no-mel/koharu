@@ -182,7 +182,7 @@ export type Error = string;
 
 export type Event = { type: "started"; run: RunId } | { type: "text_delta"; run: RunId; delta: string } | { type: "reasoning_delta"; run: RunId; delta: string } | { type: "tool_started"; run: RunId; call_id: string; name: string } | { type: "tool_finished"; run: RunId; call_id: string; name: string; changed: boolean; output: string } | { type: "completed"; run: RunId; message: string } | { type: "failed"; run: RunId; message: string } | { type: "cancelled"; run: RunId };
 
-export type ExportFormat = "png" | "psd";
+export type ExportFormat = "png" | "jpeg" | "webp" | "psd";
 
 export type Flux2KleinConfig = {
 	prompt?: string,
@@ -360,6 +360,10 @@ export type Page = {
 
 export type PageImportSource = "files" | "folder";
 
+/**
+ *  Response body for page selection: the updated project header plus the
+ *  selected page's full view.
+ */
 export type PageSelection = {
 	project: ProjectInfo,
 	page: Page,

@@ -1,23 +1,19 @@
-use std::{fs::File, io::Read, path::Path};
+use std::io::{Cursor, Read};
+use std::path::Path;
 
 use anyhow::{Context as _, Result, bail};
 
 use super::{EncodedPage, Format};
 
-pub(crate) fn extract(path: &Path) -> Result<Vec<EncodedPage>> {
-    let file = File::open(path)
-        .with_context(|| format!("failed to open ZIP/CBZ container {}", path.display()))?;
-    let mut archive = ::zip::ZipArchive::new(file)
-        .with_context(|| format!("failed to read ZIP/CBZ container {}", path.display()))?;
+pub(crate) fn extract_bytes(label: &str, bytes: Vec<u8>) -> Result<Vec<EncodedPage>> {
+    let mut archive = ::zip::ZipArchive::new(Cursor::new(bytes))
+        .with_context(|| format!("failed to read ZIP/CBZ container {label}"))?;
     let mut images = Vec::new();
 
     for index in 0..archive.len() {
-        let mut member = archive.by_index(index).with_context(|| {
-            format!(
-                "failed to read member {index} from ZIP/CBZ container {}",
-                path.display()
-            )
-        })?;
+        let mut member = archive
+            .by_index(index)
+            .with_context(|| format!("failed to read member {index} from ZIP/CBZ container {label}"))?;
         if member.is_dir() {
             continue;
         }
@@ -46,12 +42,11 @@ pub(crate) fn extract(path: &Path) -> Result<Vec<EncodedPage>> {
             continue;
         }
         let mut bytes = Vec::new();
-        member.read_to_end(&mut bytes).with_context(|| {
-            format!(
-                "failed to read image member {name:?} from ZIP/CBZ container {}",
-                path.display()
-            )
-        })?;
+        member
+            .read_to_end(&mut bytes)
+            .with_context(|| {
+                format!("failed to read image member {name:?} from ZIP/CBZ container {label}")
+            })?;
         images.push(EncodedPage { name, bytes });
     }
 
@@ -59,10 +54,7 @@ pub(crate) fn extract(path: &Path) -> Result<Vec<EncodedPage>> {
         std::ffi::OsStr::new(&image.name)
     });
     if images.is_empty() {
-        bail!(
-            "ZIP/CBZ container {} contains no supported raster images",
-            path.display()
-        );
+        bail!("ZIP/CBZ container {label} contains no supported raster images");
     }
     Ok(images)
 }
@@ -71,11 +63,7 @@ pub(crate) fn extract(path: &Path) -> Result<Vec<EncodedPage>> {
 mod tests {
     use super::*;
     use image::ImageFormat;
-    use std::{
-        io::{Cursor, Write},
-        path::PathBuf,
-        time::{SystemTime, UNIX_EPOCH},
-    };
+    use std::io::Write as _;
 
     fn sample_png() -> Vec<u8> {
         let image = image::RgbaImage::from_pixel(2, 3, image::Rgba([255, 0, 0, 255]));
@@ -86,41 +74,26 @@ mod tests {
         bytes.into_inner()
     }
 
-    fn archive_path(suffix: &str) -> PathBuf {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock after epoch")
-            .as_nanos();
-        std::env::temp_dir().join(format!(
-            "koharu-import-{}-{timestamp}.{suffix}",
-            std::process::id()
-        ))
-    }
-
-    fn write_archive(entries: &[(&str, &[u8])]) -> PathBuf {
-        let path = archive_path("cbz");
-        let file = File::create(&path).expect("create archive");
-        let mut archive = ::zip::ZipWriter::new(file);
+    fn archive_bytes(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut archive = ::zip::ZipWriter::new(Cursor::new(Vec::new()));
         let options = ::zip::write::SimpleFileOptions::default();
         for (name, bytes) in entries {
             archive.start_file(*name, options).expect("start member");
             archive.write_all(bytes).expect("write member");
         }
-        archive.finish().expect("finish archive");
-        path
+        archive.finish().expect("finish archive").into_inner()
     }
 
     #[test]
     fn reads_images_in_natural_member_order_and_skips_metadata() {
         let png = sample_png();
-        let path = write_archive(&[
+        let bytes = archive_bytes(&[
             ("ComicInfo.xml", b"<ComicInfo />"),
             ("pages/page10.png", &png),
             ("pages/page2.png", &png),
             ("__MACOSX/._page3.png", &png),
         ]);
-        let images = extract(&path).expect("read archive");
-        std::fs::remove_file(&path).expect("remove archive");
+        let images = extract_bytes("chapter.cbz", bytes).expect("read archive");
         assert_eq!(
             images
                 .iter()
@@ -132,9 +105,8 @@ mod tests {
 
     #[test]
     fn rejects_archive_without_supported_images() {
-        let path = write_archive(&[("ComicInfo.xml", b"<ComicInfo />")]);
-        let error = extract(&path).expect_err("archive should be rejected");
-        std::fs::remove_file(&path).expect("remove archive");
+        let bytes = archive_bytes(&[("ComicInfo.xml", b"<ComicInfo />")]);
+        let error = extract_bytes("chapter.cbz", bytes).expect_err("archive should be rejected");
         assert!(error.to_string().contains("no supported raster images"));
     }
 }

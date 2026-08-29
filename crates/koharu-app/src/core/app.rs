@@ -393,6 +393,28 @@ impl App {
         let pages = tokio::task::spawn_blocking(move || super::import::import(files))
             .await
             .context("page import worker stopped unexpectedly")??;
+        self.commit_imported(pages).await
+    }
+
+    /// Decodes uploaded page containers (raster images, CBZ/ZIP, RAR, PDF)
+    /// and appends them to the open project. The upload counterpart of
+    /// [`App::import_pages`] for API clients on other machines: file names
+    /// decide container format and page order, bytes never touch the
+    /// server's filesystem.
+    pub async fn import_uploaded_pages(
+        &self,
+        files: Vec<super::import::PageFile>,
+    ) -> Result<Commit> {
+        if !self.processing.stops.lock().is_empty() {
+            anyhow::bail!("pages cannot be imported while processing is running");
+        }
+        let pages = tokio::task::spawn_blocking(move || super::import::import_payloads(files))
+            .await
+            .context("page import worker stopped unexpectedly")??;
+        self.commit_imported(pages).await
+    }
+
+    async fn commit_imported(&self, pages: Vec<super::import::Page>) -> Result<Commit> {
         let page_count = pages.len();
 
         let (commit, page) = {

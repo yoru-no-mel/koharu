@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use axum::body::Body;
-use axum::extract::{Request, State};
+use axum::extract::{DefaultBodyLimit, Request, State};
 use axum::http::{HeaderValue, StatusCode, header::CONTENT_TYPE};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -24,6 +24,10 @@ pub mod routes;
 
 pub use error::ApiError;
 use koharu_app::SharedApp;
+
+/// Ceiling for one multipart upload request; a full chapter of webp pages
+/// fits comfortably, and the route is loopback/LAN oriented.
+const UPLOAD_BODY_LIMIT: usize = 1024 * 1024 * 1024;
 
 /// Function mapping a URL path (e.g. `"/index.html"`) to `(bytes, mime)`.
 /// Returning `None` signals a 404 fall-through. The headless entry point
@@ -42,6 +46,12 @@ pub fn router(app: SharedApp) -> Router {
         .route("/pages/{id}/select", post(routes::select_page))
         .route("/pages/{id}/thumbnail", get(routes::get_thumbnail))
         .route("/pages/import", post(routes::import_pages))
+        .route(
+            "/pages/upload",
+            post(routes::import_uploaded)
+                .layer(DefaultBodyLimit::max(UPLOAD_BODY_LIMIT)),
+        )
+        .route("/pages/{id}/export", get(routes::export_page))
         .route("/process", post(routes::process))
         .route("/process/{job}/stop", post(routes::stop_job))
         .route("/export", post(routes::export_pages))
@@ -146,6 +156,8 @@ async fn serve_asset(assets: AssetResolver, request: Request) -> Response {
         routes::select_page,
         routes::get_thumbnail,
         routes::import_pages,
+        routes::import_uploaded,
+        routes::export_page,
         routes::process,
         routes::stop_job,
         routes::export_pages,

@@ -61,10 +61,13 @@ New crate `crates/koharu-rpc` (axum 0.8, utoipa 5, tokio-stream):
 - Routes under `/api/v1`: `GET/POST /projects`, `DELETE /projects/{name}`,
   `POST /projects/{name}/open`, `GET /project`, `GET /pages`,
   `GET /pages/{id}`, `POST /pages/{id}/select`,
-  `GET /pages/{id}/thumbnail` (webp), `POST /pages/import` (paths in body),
+  `GET /pages/{id}/thumbnail` (webp), `POST /pages/import` (server-local
+  paths), `POST /pages/upload` (multipart bytes; 1 GiB body limit),
+  `GET /pages/{id}/export?format=` (download one rendered page),
   `POST /process`, `POST /process/{job}/stop`, `POST /export`, `GET /fonts`,
   `GET /fonts/{family}/preview` (webp), `GET/POST /preferences`,
-  `GET /translation/models`.
+  `GET /translation/models`. Upload makes the API fully usable from another
+  machine/OS — nothing requires client and server to share a filesystem.
 - `GET /api/v1/events`: SSE framing of `App::events()` — event name from the
   `Event` enum's `Display`, full tagged JSON as data, `lagged` frame on
   broadcast overflow, keep-alives on.
@@ -74,6 +77,12 @@ New crate `crates/koharu-rpc` (axum 0.8, utoipa 5, tokio-stream):
 - `serve(app, listener)` / `serve_with_assets(app, listener, resolver)` with
   an `AssetResolver` fallback hook for the static web UI. No UI bundle is
   wired yet — the current UI still assumes Tauri (Phase 4).
+- Export formats: `png`, `jpeg` (alpha flattened onto white, quality 92),
+  `webp` (lossy, quality 90 — much smaller files at identical resolution),
+  and `psd`. The quality constants live in `core/export.rs`.
+- Import decoding is byte-based end to end (`core::import::import_payloads`
+  over `PageFile{name, bytes}`); path-based imports read files first and
+  delegate, so both transports share one code path.
 - Error mapping (`error.rs`): domain precondition failures map to 409/404,
   everything else is a 500 with the full anyhow chain in
   `{"error": "..."}`. No CORS layer (loopback-only by design).
@@ -106,6 +115,7 @@ Divergences from the original plan, deliberate:
   that deep-merge over the live config handles in memory only — arrays
   replace wholesale, and `config.toml` is never written. CLI flags win over
   the file; default listen address is `127.0.0.1:9170`.
+  `headless.example.json` at the repository root is a working example.
 - `scripts/start_headless.ps1` and `.sh` launch the built binary.
 
 Divergences from the original plan, deliberate:
@@ -119,10 +129,12 @@ Divergences from the original plan, deliberate:
 ## Remaining before calling this shippable
 
 - Desktop smoke run (`bun run dev`): create/import/process/export through the
-  UI to confirm the Phase 1 re-home did not change behavior; regenerate TS
-  bindings only if the UI notices drift (command signatures did not change).
+  UI to confirm the Phase 1 re-home did not change behavior. TS bindings were
+  regenerated for the new `ExportFormat` variants (additive diff only).
 - Live headless run on Windows (`scripts/start_headless.ps1`): first-run
-  download, warmup, one full project cycle through HTTP + SSE.
+  download, warmup, one full project cycle through HTTP + SSE, plus a remote
+  client round-trip (upload from another machine via `manga.py --host`, then
+  download rendered pages in jpeg/webp).
 - Job listing endpoint (`GET /process/jobs`) if clients turn out to need
   polling; job state currently arrives only via SSE.
 

@@ -6,12 +6,13 @@
 //! with explicit paths in JSON.
 
 use anyhow::Context as _;
-use axum::extract::{Path, State};
+use axum::extract::{Multipart, Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use koharu_app::SharedApp;
 use koharu_app::core::export::ExportFormat;
+use koharu_app::core::import::PageFile;
 use koharu_app::core::fonts::FontFamily;
 use koharu_app::core::jobs::JobId;
 use koharu_app::core::preferences::{Preferences, ProviderPreferences};
@@ -181,6 +182,70 @@ pub(crate) struct ProcessRequest {
     pub scope: Scope,
     #[schema(value_type = Object)]
     pub operation: Operation,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ExportQuery {
+    pub format: Option<ExportFormat>,
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/pages/upload",
+    request_body(
+        content_type = "multipart/form-data",
+        description = "Page containers (raster images, CBZ/ZIP, RAR, PDF) as repeated file fields. The client-supplied file names decide container format and page order."
+    ),
+    responses((status = 204, description = "Pages appended to the active project"))
+)]
+pub(crate) async fn import_uploaded(
+    State(app): State<SharedApp>,
+    mut multipart: Multipart,
+) -> Result<StatusCode, ApiError> {
+    let mut files = Vec::new();
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|error| ApiError::bad_request(format!("invalid multipart upload: {error}")))?
+    {
+        let Some(name) = field.file_name().map(str::to_owned) else {
+            continue;
+        };
+        let bytes = field.bytes().await.map_err(|error| {
+            ApiError::bad_request(format!("failed to read uploaded file {name:?}: {error}"))
+        })?;
+        files.push(PageFile {
+            name,
+            bytes: bytes.into(),
+        });
+    }
+    if files.is_empty() {
+        return Err(ApiError::bad_request("no files were uploaded"));
+    }
+    app.import_uploaded_pages(files).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/pages/{id}/export",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Page id"),
+        ("format" = ExportFormat, Query, description = "Output format; defaults to png")
+    ),
+    responses(
+        (status = 200, description = "Rendered page at export quality", content_type = "image/png", body = Vec<u8>),
+        (status = 404, description = "Page not found", body = serde_json::Value),
+    )
+)]
+pub(crate) async fn export_page(
+    State(app): State<SharedApp>,
+    Path(page): Path<koharu_scene::EntityId>,
+    Query(query): Query<ExportQuery>,
+) -> Result<Response, ApiError> {
+    let format = query.format.unwrap_or(ExportFormat::Png);
+    let bytes = app.render_page(page, format).await?;
+    Ok(([(header::CONTENT_TYPE, format.content_type())], bytes).into_response())
 }
 
 #[utoipa::path(

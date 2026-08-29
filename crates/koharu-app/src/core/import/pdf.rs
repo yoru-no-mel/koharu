@@ -1,4 +1,4 @@
-use std::{fs, path::Path};
+use std::path::Path;
 
 use anyhow::{Context as _, Result, bail};
 use hayro::hayro_interpret::InterpreterSettings;
@@ -14,18 +14,19 @@ use super::EncodedPage;
 // a time releases that working buffer before the next page is processed.
 const PDF_SCALE: f32 = 300.0 / 72.0;
 
-pub(crate) fn render(path: &Path) -> Result<Vec<EncodedPage>> {
-    let data = fs::read(path).with_context(|| format!("failed to read PDF {}", path.display()))?;
+/// Renders an in-memory PDF at 300 DPI PNGs; `label` (path or upload file
+/// name) names the generated pages and error messages.
+pub(crate) fn render_bytes(label: &str, data: Vec<u8>) -> Result<Vec<EncodedPage>> {
     let pdf = Pdf::new(data)
-        .map_err(|error| anyhow::anyhow!("failed to parse PDF {}: {error:?}", path.display()))?;
+        .map_err(|error| anyhow::anyhow!("failed to parse PDF {label}: {error:?}"))?;
     let pages = pdf.pages();
     let page_count = pages.len();
 
     if page_count == 0 {
-        bail!("PDF {} contains no pages", path.display());
+        bail!("PDF {label} contains no pages");
     }
 
-    let stem = path
+    let stem = Path::new(label)
         .file_stem()
         .map(|stem| stem.to_string_lossy().into_owned())
         .filter(|stem| !stem.is_empty())
@@ -48,10 +49,7 @@ pub(crate) fn render(path: &Path) -> Result<Vec<EncodedPage>> {
             let bytes = render_page(page, &cache, &interpreter_settings, &render_settings)
                 .into_png()
                 .with_context(|| {
-                    format!(
-                        "failed to encode PDF page {page_number} of {} as PNG",
-                        path.display()
-                    )
+                    format!("failed to encode PDF page {page_number} of {label} as PNG")
                 })?;
 
             Ok(EncodedPage {
@@ -67,10 +65,7 @@ pub(crate) fn render(path: &Path) -> Result<Vec<EncodedPage>> {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        fmt::Write as _,
-        time::{SystemTime, UNIX_EPOCH},
-    };
+    use std::fmt::Write as _;
 
     use image::GenericImageView as _;
 
@@ -112,17 +107,7 @@ mod tests {
 
     #[test]
     fn renders_pdf_pages_as_300_dpi_pngs() {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock after epoch")
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "koharu-import-pdf-{}-{timestamp}.pdf",
-            std::process::id()
-        ));
-        fs::write(&path, single_page_pdf()).expect("write PDF fixture");
-        let pages = render(&path).expect("render PDF");
-        fs::remove_file(&path).expect("remove PDF fixture");
+        let pages = render_bytes("doc.pdf", single_page_pdf()).expect("render PDF");
 
         assert_eq!(pages.len(), 1);
         assert!(pages[0].name.ends_with("-001.png"));

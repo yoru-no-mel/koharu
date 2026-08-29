@@ -1,0 +1,36 @@
+{
+  "host": "127.0.0.1",
+  "port": 9170,
+  "warmup": "all",
+  "pipeline": {
+    "detection": {
+      "model": "koharu-layout-rfdetr-seg-2xl"
+    },
+    "ocr": {
+      "model": "paddleocr-vl-1.6"
+    },
+    "inpainting": {
+      "model": "lama"
+    },
+    "translation": {
+      "model": {
+        "provider": "openai-compatible",
+        "model": "gemma-4-uncensored"
+      },
+      "target_language": "en-US",
+      "instructions": "Keep sound effects short and punchy. Preserve honorifics."
+    }
+  },
+  "providers": {
+    "openai-compatible": {
+      "base_url": "https://api.venice.ai/api/v1"
+    },
+    "local": {}
+  },
+  "typesetting": {
+    "font_families": [
+      "CCWildWords",
+      "Adobe 黑体 Std"
+    ]
+  }
+}
