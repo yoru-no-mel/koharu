@@ -2,12 +2,10 @@ pub(crate) mod agent;
 pub(crate) mod canvas;
 pub(crate) mod editing;
 pub(crate) mod fonts;
-pub(crate) mod import;
 pub(crate) mod lifecycle;
 pub(crate) mod output;
 pub(crate) mod preferences;
 pub(crate) mod processing;
-pub(crate) mod project;
 
 use parking_lot::Mutex;
 use serde::Serialize;
@@ -48,6 +46,58 @@ impl<T: IpcResponse> ChannelExt<T> for Mutex<Option<Channel<T>>> {
             .is_some_and(|channel| channel.send(value).is_err())
         {
             channel.take();
+        }
+    }
+}
+
+/// Forwards core event-bus events into the desktop channel slots that the
+/// `subscribe` command registers. Runs for the whole process lifetime; the
+/// headless HTTP layer subscribes to the same bus directly.
+pub(crate) async fn forward_events(
+    app: std::sync::Arc<crate::core::App>,
+    handle: tauri::AppHandle<tauri::Cef>,
+) {
+    use tauri::Manager as _;
+
+    let mut events = app.events().subscribe();
+    loop {
+        match events.recv().await {
+            Ok(event) => match event {
+                crate::core::events::Event::Canvas(state) => {
+                    handle
+                        .state::<canvas::CanvasChannel>()
+                        .channel
+                        .publish(state);
+                }
+                crate::core::events::Event::Job(job) => {
+                    handle
+                        .state::<processing::JobChannel>()
+                        .channel
+                        .publish(job);
+                }
+                crate::core::events::Event::Download(download) => {
+                    handle
+                        .state::<lifecycle::DownloadChannel>()
+                        .channel
+                        .publish(download);
+                }
+                crate::core::events::Event::Resources(resources) => {
+                    handle
+                        .state::<lifecycle::ResourceChannel>()
+                        .channel
+                        .publish(resources);
+                }
+                crate::core::events::Event::Project(info) => {
+                    handle
+                        .state::<lifecycle::ProjectChannel>()
+                        .channel
+                        .publish(info);
+                }
+            },
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                tracing::warn!(skipped, "desktop event forwarding fell behind");
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
         }
     }
 }

@@ -4,38 +4,33 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use koharu_agent::{Control, Host, Invocation, Tool, ToolCall};
-use koharu_desktop::{Desktop, Frame};
+use koharu_desktop::Frame;
 use koharu_pipeline::{Committer, Operation, RunStatus, Scope, Stage, StageOutput, StopToken};
 use koharu_scene::{Commit, EntityId, Snapshot};
 use schemars::{JsonSchema, schema_for};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tauri::{AppHandle, Cef, Manager as _};
 
-use crate::commands::{
-    ChannelExt as _,
-    canvas::{CanvasChannel, Point},
-    editing::{GeometryUpdate, TypographyUpdate},
-    output,
+use crate::core::{
+    SharedApp,
+    jobs::JobId,
     preferences::Preferences,
-    processing::{JobId, Processing},
-    project::{CurrentProject, Project, Typography},
+    project::{GeometryUpdate, Point, Project, Typography, TypographyUpdate},
 };
 
 #[derive(Clone)]
 pub(super) struct KoharuHost {
-    handle: AppHandle<Cef>,
+    app: SharedApp,
 }
 
 impl KoharuHost {
-    pub(super) fn new(handle: AppHandle<Cef>) -> Self {
-        Self { handle }
+    pub(super) fn new(app: SharedApp) -> Self {
+        Self { app }
     }
 
     async fn project_context(&self) -> Result<Value> {
         let (project, pages) = {
-            let current = self.handle.state::<CurrentProject>();
-            let current = current.project.lock().await;
+            let current = self.app.project.lock().await;
             let project = current.as_ref().context("no project is open")?;
             let snapshot = project.snapshot();
             let pages = Project::pages(&snapshot)?
@@ -46,8 +41,8 @@ impl KoharuHost {
         };
         let preferences = Preferences::load()?;
         let fonts = self
-            .handle
-            .state::<Desktop>()
+            .app
+            .desktop
             .renderer()
             .available_fonts()
             .await?;
@@ -90,8 +85,7 @@ impl KoharuHost {
         T: serde::Serialize + Send,
     {
         let (commit, value, page, project) = {
-            let current = self.handle.state::<CurrentProject>();
-            let mut current = current.project.lock().await;
+            let mut current = self.app.project.lock().await;
             let project = current.as_mut().context("no project is open")?;
             let (commit, value) = mutation(project).await?;
             project.record_commit(&commit);
@@ -108,37 +102,34 @@ impl KoharuHost {
     }
 
     async fn synchronize(&self, commit: Commit, page: Option<EntityId>) -> Result<()> {
-        let desktop = self.handle.state::<Desktop>();
-        desktop.synchronize(&commit.snapshot, page, &commit).await?;
-        let canvas = desktop.canvas_state();
-        self.handle.state::<CanvasChannel>().channel.publish(canvas);
+        self.app
+            .desktop
+            .synchronize(&commit.snapshot, page, &commit)
+            .await?;
+        let canvas = self.app.desktop.canvas_state();
+        self.app.publish_canvas(canvas);
         Ok(())
     }
 
     async fn run_pipeline(&self, arguments: RunPipeline, control: &Control) -> Result<Invocation> {
         let scope = arguments.scope()?;
         let operation = arguments.operation.into();
-        let snapshot = self
-            .handle
-            .state::<CurrentProject>()
-            .project
-            .lock()
-            .await
-            .as_ref()
-            .context("no project is open")?
-            .snapshot();
+        let snapshot = {
+            let current = self.app.project.lock().await;
+            let project = current.as_ref().context("no project is open")?;
+            project.snapshot()
+        };
         let job = JobId::new();
         let stop = StopToken::default();
         {
-            let processing = self.handle.state::<Processing>();
-            let mut stops = processing.stops.lock();
+            let mut stops = self.app.processing.stops.lock();
             if !stops.is_empty() {
                 bail!("another pipeline process is already running");
             }
             stops.insert(job, stop.clone());
         }
 
-        let watcher = tauri::async_runtime::spawn({
+        let watcher = tokio::spawn({
             let control = control.clone();
             let stop = stop.clone();
             async move {
@@ -155,12 +146,12 @@ impl KoharuHost {
             inpainting_mask: None,
         };
         let result = self
-            .handle
-            .state::<koharu_pipeline::Pipeline>()
+            .app
+            .pipeline()
             .execute(snapshot, request, &mut committer)
             .await;
         watcher.abort();
-        self.handle.state::<Processing>().stops.lock().remove(&job);
+        self.app.processing.stops.lock().remove(&job);
         let report = result.map_err(|error| anyhow!(error))?;
         if report.status == RunStatus::Stopped {
             bail!("pipeline processing was cancelled");
@@ -244,19 +235,12 @@ impl Host for KoharuHost {
             "view_page" => {
                 let arguments: ViewPage = arguments(&call)?;
                 let page = entity(&arguments.page)?;
-                let (label, snapshot) = {
-                    let current = self.handle.state::<CurrentProject>();
-                    let current = current.project.lock().await;
+                let label = {
+                    let current = self.app.project.lock().await;
                     let project = current.as_ref().context("no project is open")?;
-                    let snapshot = project.snapshot();
-                    let label = snapshot.page(page)?.page()?.label;
-                    (label, snapshot)
+                    project.snapshot().page(page)?.page()?.label
                 };
-                let desktop = self.handle.state::<Desktop>();
-                let renderer = desktop.renderer();
-                let rasterizer = desktop.rasterizer().await?;
-                let bytes =
-                    output::rendered_preview(&renderer, rasterizer, &snapshot, page).await?;
+                let bytes = self.app.rendered_preview(page).await?;
                 Ok(
                     Invocation::read(json!({ "page": page, "label": label }))?.with_image(
                         format!("Rendered page {label} ({page})"),
@@ -463,8 +447,7 @@ struct AgentCommitter {
 impl Committer for AgentCommitter {
     async fn commit(&mut self, output: StageOutput) -> Result<Snapshot> {
         let (commit, page) = {
-            let current = self.host.handle.state::<CurrentProject>();
-            let mut current = current.project.lock().await;
+            let mut current = self.host.app.project.lock().await;
             let project = current.as_mut().context("no project is open")?;
             let Some(commit) = project.commit_rebased(output.patch).await? else {
                 return Ok(project.snapshot());

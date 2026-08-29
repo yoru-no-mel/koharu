@@ -1,68 +1,12 @@
 use anyhow::{Context as _, Result};
-use tauri::{AppHandle, Cef, Manager as _, WindowEvent};
-use tokio::sync::Mutex;
+use tauri::{Cef, Manager as _, WindowEvent};
 
 use crate::commands::{
     agent::AgentState,
     canvas::CanvasChannel,
-    lifecycle::{
-        Download, DownloadChannel, DownloadState, Initialization, ModelResources, ProjectChannel,
-        ResourceChannel,
-    },
-    processing::{JobChannel, Processing},
-    project::{CurrentProject, ProjectLibrary},
+    lifecycle::{DownloadChannel, ProjectChannel, ResourceChannel},
+    processing::JobChannel,
 };
-
-#[tracing::instrument(
-    target = "koharu_metrics",
-    name = "app_started",
-    skip_all,
-    fields(phase = "initialization")
-)]
-pub(crate) async fn initialize(handle: AppHandle<Cef>) -> Result<()> {
-    koharu_ml::init()
-        .await
-        .context("failed to initialize the ML runtime")?;
-    let device = koharu_ml::device(false);
-    koharu_metrics::context(serde_json::json!({
-        "compute_backend": device.backend.to_string().to_ascii_lowercase(),
-        "device_type": format!("{:?}", device.device_type).to_ascii_lowercase(),
-        "gpu_model": device.description.clone(),
-        "vram_bytes": device.memory_total,
-    }));
-    let pipeline = koharu_pipeline::Pipeline::load(device)?;
-    handle.manage(pipeline.clone());
-
-    let mut resources = pipeline.subscribe_resources();
-    let resource_handle = handle.clone();
-    drop(tauri::async_runtime::spawn(async move {
-        while resources.changed().await.is_ok() {
-            let snapshot = resources.borrow_and_update().clone();
-            let resources = resource_handle.state::<ResourceChannel>();
-            let mut channel = resources.channel.lock();
-            if let Some(current) = channel.as_ref()
-                && current.send(ModelResources::from(snapshot)).is_err()
-            {
-                channel.take();
-            }
-        }
-    }));
-
-    let project = handle
-        .state::<CurrentProject>()
-        .project
-        .lock()
-        .await
-        .as_ref()
-        .map(|project| (project.snapshot(), project.active_page()));
-    let desktop = handle.state::<koharu_desktop::Desktop>();
-    if let Some((snapshot, page)) = project {
-        desktop.show_page(&snapshot, page).await?;
-    } else {
-        desktop.clear().await;
-    }
-    Ok(())
-}
 
 pub fn run(context: tauri::Context<Cef>) -> Result<()> {
     let builder = tauri::Builder::<Cef>::default()
@@ -120,21 +64,25 @@ pub fn run(context: tauri::Context<Cef>) -> Result<()> {
                     .join("store"),
             )?;
 
-            application.manage(CurrentProject {
-                project: Mutex::new(None),
-            });
-            application.manage(ProjectLibrary::new()?);
-            application.manage(Processing::default());
+            // Transport-side channel slots for the desktop UI; the state
+            // itself lives in the shared App aggregate.
             application.manage(CanvasChannel::default());
             application.manage(JobChannel::default());
             application.manage(DownloadChannel::default());
             application.manage(ResourceChannel::default());
             application.manage(ProjectChannel::default());
-            application.manage(Initialization::default());
 
             let handle = application.handle().clone();
-            application.manage(koharu_desktop::Desktop::new()?);
-            application.manage(AgentState::new(handle.clone())?);
+            let app = std::sync::Arc::new(crate::core::App::new()?);
+            application.manage(AgentState::new(app.clone())?);
+            application.manage(app.clone());
+
+            // Forward core events into the desktop channel slots that the
+            // `subscribe` command registers; headless serves the same stream
+            // through SSE instead of duplicating producers.
+            drop(tauri::async_runtime::spawn(
+                crate::commands::forward_events(app.clone(), handle.clone()),
+            ));
 
             let window_config = application
                 .config()
@@ -150,105 +98,13 @@ pub fn run(context: tauri::Context<Cef>) -> Result<()> {
             window
                 .set_focus()
                 .context("failed to focus the main window")?;
-            let initialization_handle = handle.clone();
+            let initialization_handle = app.clone();
             drop(tauri::async_runtime::spawn(async move {
-                initialize(initialization_handle.clone())
+                initialization_handle
+                    .initialize()
                     .await
                     .expect("failed to initialize the desktop runtime");
-                initialization_handle.state::<Initialization>().ready();
-            }));
-
-            let mut downloads = koharu_runtime::download::subscribe();
-            let download_handle = handle.clone();
-            drop(tauri::async_runtime::spawn(async move {
-                loop {
-                    match downloads.recv().await {
-                        Ok(event) => {
-                            let download = match event {
-                                koharu_runtime::download::Event::Started { id, name } => {
-                                    tracing::info!(
-                                        target: "koharu_metrics",
-                                        metric = "download_start",
-                                        resource = "runtime",
-                                    );
-                                    Download {
-                                        id,
-                                        state: DownloadState::Running,
-                                        name: Some(name),
-                                        completed: 0,
-                                        total: 0,
-                                        error: None,
-                                    }
-                                }
-                                koharu_runtime::download::Event::Progress {
-                                    id,
-                                    name,
-                                    completed,
-                                    total,
-                                } => {
-                                    tracing::info!(
-                                        target: "koharu_metrics",
-                                        metric = "download_progress",
-                                        resource = "runtime",
-                                        used_bytes = completed,
-                                        total_bytes = total,
-                                    );
-                                    Download {
-                                        id,
-                                        state: DownloadState::Running,
-                                        name: Some(name),
-                                        completed,
-                                        total,
-                                        error: None,
-                                    }
-                                }
-                                koharu_runtime::download::Event::Finished { id } => {
-                                    tracing::info!(
-                                        target: "koharu_metrics",
-                                        metric = "download_result",
-                                        resource = "runtime",
-                                        outcome = "completed",
-                                    );
-                                    Download {
-                                        id,
-                                        state: DownloadState::Finished,
-                                        name: None,
-                                        completed: 0,
-                                        total: 0,
-                                        error: None,
-                                    }
-                                }
-                                koharu_runtime::download::Event::Failed { id, name, error } => {
-                                    tracing::info!(
-                                        target: "koharu_metrics",
-                                        metric = "download_result",
-                                        resource = "runtime",
-                                        outcome = "failed",
-                                    );
-                                    Download {
-                                        id,
-                                        state: DownloadState::Failed,
-                                        name: Some(name),
-                                        completed: 0,
-                                        total: 0,
-                                        error: Some(error),
-                                    }
-                                }
-                            };
-                            let downloads = download_handle.state::<DownloadChannel>();
-                            let mut channel = downloads.channel.lock();
-                            if let Some(current) = channel.as_ref()
-                                && current.send(download).is_err()
-                            {
-                                channel.take();
-                            }
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                            tracing::warn!(skipped, "download channel fell behind");
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                    }
-                }
+                initialization_handle.mark_ready();
             }));
 
             Ok(())
@@ -258,12 +114,8 @@ pub fn run(context: tauri::Context<Cef>) -> Result<()> {
                 event,
                 WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed
             ) {
-                let processing = window.state::<Processing>();
-                for stop in processing.stops.lock().values() {
-                    stop.stop();
-                }
-                processing.stops.lock().clear();
-                processing.jobs.lock().clear();
+                let app = window.state::<std::sync::Arc<crate::core::App>>();
+                app.cancel_processing();
                 window.state::<AgentState>().cancel_all();
             }
             if matches!(event, WindowEvent::Destroyed) {

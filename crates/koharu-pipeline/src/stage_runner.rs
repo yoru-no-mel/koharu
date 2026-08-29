@@ -32,6 +32,17 @@ impl StageRunner {
         })
     }
 
+    /// Loads each stage's model without processing any pages; the first
+    /// stage load downloads missing weights through the runtime store.
+    #[tracing::instrument(skip_all)]
+    pub(crate) async fn warm(&self, stages: impl IntoIterator<Item = Stage>) -> Result<()> {
+        for stage in stages {
+            tracing::info!(target: "koharu_metrics", metric = "warmup", stage = %stage);
+            self.stages.load(stage).await?;
+        }
+        Ok(())
+    }
+
     #[tracing::instrument(skip_all)]
     pub(crate) async fn run(&self, job: StageJob) -> StageCompletion {
         let started = Instant::now();

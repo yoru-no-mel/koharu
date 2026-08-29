@@ -45,6 +45,14 @@ macro_rules! entity_id {
 entity_id!(EntityId);
 entity_id!(RelationId);
 
+impl FromStr for EntityId {
+    type Err = <Uuid as FromStr>::Err;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        value.parse().map(Self)
+    }
+}
+
 #[derive(
     Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, Type,
 )]

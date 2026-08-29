@@ -16,13 +16,22 @@ license.workspace = true
 default = ["tauri/cef"]
 
 [dependencies]
+anyhow = { workspace = true }
 clap = { workspace = true }
 console = { workspace = true }
+dirs = { workspace = true }
 koharu-app = { workspace = true }
+koharu-config = { workspace = true }
 koharu-metrics = { workspace = true }
+koharu-pipeline = { workspace = true }
+koharu-renderer = { workspace = true }
+koharu-rpc = { workspace = true }
+koharu-runtime = { workspace = true }
+koharu-translator = { workspace = true }
 log = { workspace = true }
 rfd = { workspace = true }
 sentry = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 tauri = { workspace = true }
 tauri-plugin-opener = { workspace = true }

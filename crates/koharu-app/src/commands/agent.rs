@@ -29,9 +29,9 @@ pub(crate) struct AgentState {
 }
 
 impl AgentState {
-    pub(crate) fn new(handle: AppHandle<Cef>) -> Result<Self> {
+    pub(crate) fn new(app: std::sync::Arc<crate::core::App>) -> Result<Self> {
         Ok(Self {
-            agent: Arc::new(Agent::new(Codex::new()?, KoharuHost::new(handle))?),
+            agent: Arc::new(Agent::new(Codex::new()?, KoharuHost::new(app))?),
             runs: Mutex::new(HashMap::new()),
             login: Mutex::new(None),
             idle: Notify::new(),

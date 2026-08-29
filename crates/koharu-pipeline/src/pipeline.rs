@@ -6,7 +6,7 @@ use koharu_config::Config;
 use koharu_scene::Snapshot;
 
 use crate::{
-    Committer, PipelineConfig, PipelineError, Report, Request, ResourceSnapshot,
+    Committer, PipelineConfig, PipelineError, Report, Request, ResourceSnapshot, Stage,
     execution::Execution, resources::ResourceMonitor, stage_runner::StageRunner,
 };
 
@@ -70,6 +70,15 @@ impl Pipeline {
     pub fn subscribe_resources(&self) -> tokio::sync::watch::Receiver<ResourceSnapshot> {
         self.resources.start();
         self.resources.subscribe()
+    }
+
+    /// Loads each stage's configured model, downloading weights through the
+    /// runtime store when missing, without processing any pages. Headless
+    /// startup warms the configured stages before marking the application
+    /// ready so first requests do not pay the load cost.
+    #[tracing::instrument(skip_all)]
+    pub async fn warm(&self, stages: impl IntoIterator<Item = Stage>) -> Result<()> {
+        self.current.load_full().warm(stages).await
     }
 
     #[tracing::instrument(skip_all)]

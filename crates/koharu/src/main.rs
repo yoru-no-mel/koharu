@@ -3,6 +3,10 @@
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 mod mallinfo;
 
+mod headless;
+
+use std::path::PathBuf;
+
 use clap::Parser as _;
 use koharu::panic;
 use koharu::sentry;
@@ -11,7 +15,28 @@ use tracing_subscriber::{Layer as _, filter::filter_fn, layer::SubscriberExt as 
 
 #[derive(clap::Parser)]
 #[command(version, about)]
-struct Cli {}
+struct Cli {
+    /// Run without the desktop window and serve the HTTP API instead.
+    #[arg(long)]
+    headless: bool,
+
+    /// Headless bind address; overrides headless.json.
+    #[arg(long, requires = "headless")]
+    host: Option<String>,
+
+    /// Headless bind port; overrides headless.json.
+    #[arg(long, requires = "headless")]
+    port: Option<u16>,
+
+    /// Headless configuration file; defaults to ~/.koharu/headless.json.
+    #[arg(long, requires = "headless")]
+    config: Option<PathBuf>,
+
+    /// Headless runtime store directory; defaults to a `store` directory next
+    /// to the executable.
+    #[arg(long, requires = "headless")]
+    store: Option<PathBuf>,
+}
 
 #[tokio::main]
 #[tauri::cef_entry_point]
@@ -26,7 +51,7 @@ async fn main() {
         };
     }
 
-    let _cli = Cli::parse();
+    let cli = Cli::parse();
     let _guard = sentry::initialize();
     panic::install();
     let filter = filter_fn(|metadata| metadata.target() != "koharu_metrics");
@@ -42,6 +67,19 @@ async fn main() {
             .with(koharu::tracing::TimingLayer::new().with_filter(filter)),
     )
     .expect("failed to set the global tracing subscriber");
+
+    if cli.headless {
+        headless::run(headless::Options {
+            host: cli.host,
+            port: cli.port,
+            config: cli.config,
+            store: cli.store,
+        })
+        .await
+        .expect("the headless runtime failed");
+        return;
+    }
+
     tokio::task::block_in_place(|| app::run(tauri::generate_context!()))
         .expect("failed to run the desktop application");
 }

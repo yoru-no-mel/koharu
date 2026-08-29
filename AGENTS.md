@@ -4,7 +4,6 @@ Document only durable, repository-specific constraints here. Do not record curre
 
 ## Change Policy
 
-- Never add backward compatibility. When an API, schema, configuration, or ownership boundary changes, update every in-repository consumer and remove the replaced form.
 - Prefer a coherent ownership redesign over aliases, forwarding layers, compatibility parsers, or cosmetic renaming.
 - Keep responsibilities self-contained. Defaults and provider-specific behavior belong to the component that owns them rather than a central list of special cases.
 - Remove dead abstractions and one-use helpers when direct code is clearer.
@@ -45,6 +44,15 @@ Document only durable, repository-specific constraints here. Do not record curre
 - Optimize for fast development and iteration. By default, run the smallest relevant check or focused test once using the debug profile.
 - Do not run full test suites, repeatedly rerun unchanged tests or builds, or build and test profiles other than debug unless the user explicitly requests it.
 - Run end-to-end tests only when the user explicitly asks for them.
+
+## Headless Mode
+
+- Koharu supports three launch modes over one shared runtime: desktop (window + local server), headless (local server, no window), and MCP (agent tooling over the same server).
+- The operation layer must stay transport-agnostic: no Tauri types, IPC channels, or native file dialogs below the command boundary. Desktop commands and HTTP handlers are both thin adapters over the same services.
+- Streaming progress uses an event abstraction, not a concrete Tauri `Channel`, so headless can serve the same events (SSE) without duplication.
+- Headless serves the prebuilt web UI and the versioned API on a local address; the server defaults to loopback binding and has no built-in authentication.
+- Keep the desktop and headless feature sets aligned; a capability available in one mode should be reachable through the other unless it inherently requires a window.
+- Implementation status and continuation notes live in `docs/development/headless-progress.md` — read it before touching the command layer or adding the RPC crate, and update it when phases land.
 
 ## Desktop UI Debugging
 
