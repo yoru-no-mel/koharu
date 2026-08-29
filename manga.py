@@ -227,6 +227,25 @@ class KoharuClient:
         raise RuntimeError("Event stream ended without a terminal job state")
 
     # ---- Export (download) ----
+    def export_one(self, page_id, fmt, attempts=4, backoff=5):
+        """GET one rendered page, retrying transient 5xx failures. The
+        server re-attempts GPU rasterizer initialization on every request,
+        so a 'no WGPU adapter' 500 right after server start (while the ML
+        models are still loading onto the GPU) usually clears in seconds."""
+        for attempt in range(1, attempts + 1):
+            r = self.session.get(
+                self._url(f"/pages/{page_id}/export"),
+                params={"format": fmt}, timeout=600)
+            if r.status_code < 500:
+                r.raise_for_status()
+                return r.content
+            if attempt < attempts:
+                print(f"  export attempt {attempt} failed (HTTP {r.status_code}: "
+                      f"{r.text[:120]}...) — retrying in {backoff}s")
+                time.sleep(backoff)
+        r.raise_for_status()
+        return r.content
+
     def export_pages(self, fmt, output_dir):
         """GET /pages/{id}/export per page — rendered bytes download
         straight to the local machine, so output lands on the client."""
@@ -236,12 +255,9 @@ class KoharuClient:
         extension = EXPORT_EXTS[fmt]
         for index, page in enumerate(pages, 1):
             label = sanitize(page.get("label") or "page")
-            r = self.session.get(
-                self._url(f"/pages/{page['id']}/export"),
-                params={"format": fmt}, timeout=600)
-            r.raise_for_status()
+            content = self.export_one(page["id"], fmt)
             path = output_dir / f"{index:04}_{label}.{extension}"
-            path.write_bytes(r.content)
+            path.write_bytes(content)
             print(f"  saved {path}")
         print(f"Exported {len(pages)} file(s).")
 
@@ -317,8 +333,8 @@ def main():
                     help="Comma-separated subset of stages to run: "
                          f"{','.join(ALL_STAGES)} (default: all). Export always "
                          "renders whatever state the pages are in")
-    ap.add_argument("--format", choices=list(EXPORT_EXTS), default="png",
-                    help="Download format (default png). jpeg/webp are lossy "
+    ap.add_argument("--format", choices=list(EXPORT_EXTS), default="webp",
+                    help="Download format (default webp). jpeg/webp are lossy "
                          "at full resolution — much smaller files than png")
     ap.add_argument("--fresh", action="store_true", default=False,
                     help="Delete an existing project of the same name first, "
