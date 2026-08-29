@@ -56,3 +56,8 @@ test-results/
 
 # Zensical build output
 /docs/site/
+
+# Local test data and Python cache
+testing/
+__pycache__/
+*.pyc
