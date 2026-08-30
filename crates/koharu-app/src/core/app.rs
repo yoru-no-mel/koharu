@@ -19,7 +19,10 @@ use super::{
     events::{Event, EventBus},
     jobs::{JobId, Processing},
     preferences::Preferences,
-    project::{Page, PageSelection, PageSummary, Project, ProjectInfo, ProjectLibrary, ProjectSummary},
+    project::{
+        Page, PageSelection, PageSummary, PageText, Project, ProjectInfo, ProjectLibrary,
+        ProjectSummary,
+    },
 };
 
 /// Aggregate application state shared by all frontends.
@@ -491,6 +494,21 @@ impl App {
             .snapshot();
         snapshot.page(page)?;
         Ok(Project::page(&snapshot, page)?)
+    }
+
+    /// Text-only view of every page in the active project, in page order.
+    pub async fn texts(&self) -> Result<Vec<PageText>> {
+        let snapshot = self
+            .project
+            .lock()
+            .await
+            .as_ref()
+            .context("no project is open")?
+            .snapshot();
+        snapshot
+            .pages()
+            .map(|page| Project::texts(&snapshot, page.id()))
+            .collect()
     }
 
     pub fn stop_job(&self, job: JobId) -> Result<()> {

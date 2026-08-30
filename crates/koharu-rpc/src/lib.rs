@@ -43,6 +43,7 @@ pub fn router(app: SharedApp) -> Router {
         .route("/project", get(routes::get_project))
         .route("/pages", get(routes::get_pages))
         .route("/pages/{id}", get(routes::get_page))
+        .route("/texts", get(routes::get_texts))
         .route("/pages/{id}/select", post(routes::select_page))
         .route("/pages/{id}/thumbnail", get(routes::get_thumbnail))
         .route("/pages/import", post(routes::import_pages))
@@ -153,6 +154,7 @@ async fn serve_asset(assets: AssetResolver, request: Request) -> Response {
         routes::get_project,
         routes::get_pages,
         routes::get_page,
+        routes::get_texts,
         routes::select_page,
         routes::get_thumbnail,
         routes::import_pages,

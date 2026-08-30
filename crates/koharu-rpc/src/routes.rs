@@ -17,7 +17,7 @@ use koharu_app::core::fonts::FontFamily;
 use koharu_app::core::jobs::JobId;
 use koharu_app::core::preferences::{Preferences, ProviderPreferences};
 use koharu_app::core::project::{
-    Page, PageSelection, PageSummary, ProjectInfo, ProjectSummary,
+    Page, PageSelection, PageSummary, PageText, ProjectInfo, ProjectSummary,
 };
 use koharu_pipeline::{Operation, Scope};
 use serde::Deserialize;
@@ -124,6 +124,17 @@ pub(crate) async fn get_page(
     Path(page): Path<koharu_scene::EntityId>,
 ) -> Result<Json<Page>, ApiError> {
     Ok(Json(app.page_view(page).await?))
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/texts",
+    responses((status = 200, description = "Original and translated text of every page in the active project, in page order", body = [PageText]))
+)]
+pub(crate) async fn get_texts(
+    State(app): State<SharedApp>,
+) -> Result<Json<Vec<PageText>>, ApiError> {
+    Ok(Json(app.texts().await?))
 }
 
 #[utoipa::path(

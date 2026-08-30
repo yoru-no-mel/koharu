@@ -64,7 +64,9 @@ New crate `crates/koharu-rpc` (axum 0.8, utoipa 5, tokio-stream):
   `GET /pages/{id}/thumbnail` (webp), `POST /pages/import` (server-local
   paths), `POST /pages/upload` (multipart bytes; 1 GiB body limit),
   `GET /pages/{id}/export?format=` (download one rendered page),
-  `POST /process`, `POST /process/{job}/stop`, `POST /export`, `GET /fonts`,
+  `GET /texts` (text-only view: original/translated pairs per page, no
+  geometry), `POST /process`, `POST /process/{job}/stop`, `POST /export`,
+  `GET /fonts`,
   `GET /fonts/{family}/preview` (webp), `GET/POST /preferences`,
   `GET /translation/models`. Upload makes the API fully usable from another
   machine/OS — nothing requires client and server to share a filesystem.

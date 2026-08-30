@@ -8,11 +8,16 @@ Runs the full pipeline on every supported image inside an input folder:
 Works from any machine: images are UPLOADED as multipart bytes and rendered
 pages are DOWNLOADED — the server never needs the client's file paths.
 
+With --text, rendered images are skipped entirely and the translated text is
+saved instead (as .txt and/or .epub), fetched from the text-only JSON API:
+    GET  /texts                     original + translated text per page
+
 Talks to the real Koharu API (koharu-rpc), mounted at the server root:
     POST /pages/upload              upload image/archive/PDF bytes
     POST /process                   start the pipeline, returns a job id
     GET  /events                    SSE stream carrying job progress events
     GET  /pages/{id}/export         download one rendered page
+    GET  /texts                     original/translated text per page
 
 Translation model / provider / target language are NOT set by this script —
 they come from the server's preferences (~/.koharu/headless.json overlay or
@@ -31,6 +36,9 @@ Usage:
     # recursive: each immediate subfolder becomes its own project/batch
     python manga.py chapters --recursive
 
+    # text-only: skip image export, save the translation as txt AND epub
+    python manga.py testing_novel --recursive --text txt,epub
+
     # run only some stages (default: the full chain)
     python manga.py testing --stages detection,ocr
 
@@ -39,9 +47,13 @@ Usage:
 """
 
 import argparse
+import html
 import json
 import sys
 import time
+import uuid
+import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
@@ -51,6 +63,8 @@ SUPPORTED_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
 ALL_STAGES = ["detection", "ocr", "translation", "inpainting"]
 
 EXPORT_EXTS = {"png": "png", "jpeg": "jpg", "webp": "webp", "psd": "psd"}
+
+TEXT_FORMATS = {"txt", "epub"}
 
 # One multipart request stays well under the server's 1 GiB body limit;
 # batches are appended in order, so page ordering is preserved.
@@ -249,6 +263,15 @@ class KoharuClient:
                 raise RuntimeError(f"Job failed: {job.get('error')}")
         raise RuntimeError("Event stream ended without a terminal job state")
 
+    # ---- Text-only export ----
+    def fetch_texts(self):
+        """GET /texts — per page, the original + translated text of every
+        text layer in scene (reading) order. No images are involved, so this
+        works even when the rasterizer can't run on the server's GPU."""
+        r = self.session.get(self._url("/texts"), timeout=60)
+        r.raise_for_status()
+        return r.json()
+
     # ---- Export (download) ----
     def export_one(self, page_id, fmt, attempts=6, backoff=10):
         """GET one rendered page, retrying transient 5xx failures. The ML
@@ -294,10 +317,118 @@ def find_images(folder: Path):
     return images
 
 
+def segment_text(segment: dict) -> str:
+    """The translated text of one text layer; pages processed without the
+    translation stage fall back to the OCR'd original so nothing is lost."""
+    return (segment.get("translation") or segment.get("source") or "").strip()
+
+
+def write_txt(pages, path: Path):
+    """One plain-text file: per page a `== label ==` header followed by the
+    translated segments in server order, separated by blank lines."""
+    chunks = []
+    for page in pages:
+        chunks.append(f"== {page.get('label') or 'page'} ==")
+        for segment in page.get("segments") or []:
+            text = segment_text(segment)
+            if text:
+                chunks.append(text)
+        chunks.append("")
+    path.write_text("\n".join(chunks).rstrip() + "\n", encoding="utf-8")
+
+
+EPUB_CHAPTER = """<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head><title>{title}</title></head>
+  <body>
+    <h2>{title}</h2>
+{paragraphs}
+  </body>
+</html>
+"""
+
+EPUB_NAV = """<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+  <head><title>Contents</title></head>
+  <body>
+    <nav epub:type="toc"><h1>Contents</h1><ol>
+{items}
+    </ol></nav>
+  </body>
+</html>
+"""
+
+EPUB_OPF = """<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="bookid">urn:uuid:{book_id}</dc:identifier>
+    <dc:title>{title}</dc:title>
+    <dc:language>und</dc:language>
+    <meta property="dcterms:modified">{modified}</meta>
+  </metadata>
+  <manifest>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+{manifest_items}
+  </manifest>
+  <spine>
+    <itemref idref="nav"/>
+{spine_items}
+  </spine>
+</package>
+"""
+
+EPUB_CONTAINER = """<?xml version="1.0" encoding="utf-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>
+"""
+
+
+def write_epub(pages, path: Path, title: str):
+    """EPUB 3 via stdlib zipfile: one XHTML chapter per page, each translated
+    segment as a <p>. Empty pages stay in the book as empty chapters so the
+    page count matches the source."""
+    chapters = []
+    for index, page in enumerate(pages, 1):
+        label = page.get("label") or f"page {index}"
+        paragraphs = "\n".join(
+            f"    <p>{html.escape(text)}</p>"
+            for segment in (page.get("segments") or [])
+            if (text := segment_text(segment)))
+        chapters.append((f"page{index:04}.xhtml", label,
+                         EPUB_CHAPTER.format(title=html.escape(label),
+                                             paragraphs=paragraphs)))
+
+    with zipfile.ZipFile(path, "w") as book:
+        # mimetype must be the first entry, stored uncompressed (EPUB spec)
+        book.writestr(zipfile.ZipInfo("mimetype"),
+                      "application/epub+zip", zipfile.ZIP_STORED)
+        book.writestr("META-INF/container.xml", EPUB_CONTAINER, zipfile.ZIP_DEFLATED)
+        book.writestr("OEBPS/nav.xhtml",
+                      EPUB_NAV.format(items="\n".join(
+                          f'      <li><a href="{name}">{html.escape(label)}</a></li>'
+                          for name, label, _ in chapters)), zipfile.ZIP_DEFLATED)
+        book.writestr("OEBPS/content.opf", EPUB_OPF.format(
+            book_id=uuid.uuid4(), title=html.escape(title),
+            modified=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            manifest_items="\n".join(
+                f'    <item id="c{i}" href="{name}" media-type="application/xhtml+xml"/>'
+                for i, (name, _, _) in enumerate(chapters, 1)),
+            spine_items="\n".join(
+                f'    <itemref idref="c{i}"/>' for i, _ in enumerate(chapters, 1))),
+            zipfile.ZIP_DEFLATED)
+        for name, _, content in chapters:
+            book.writestr(f"OEBPS/{name}", content, zipfile.ZIP_DEFLATED)
+
+
 def process_folder(client, args, input_dir: Path, output_dir: Path, project_name: str,
-                   resume_project=None):
-    """Upload one folder of images, run the pipeline, download rendered
-    pages into the local output_dir."""
+                   resume_project=None, text_formats=None):
+    """Upload one folder of images, run the pipeline, then either download
+    rendered pages or save the translated text into the local output_dir."""
     output_dir.mkdir(parents=True, exist_ok=True)
     images = find_images(input_dir)
     print(f"Found {len(images)} image(s) in {input_dir}")
@@ -328,8 +459,22 @@ def process_folder(client, args, input_dir: Path, output_dir: Path, project_name
     job_id = client.start_process(stages=stages)
     client.wait_job(job_id, timeout=args.timeout)
 
-    print(f"Downloading rendered pages to {output_dir} ...")
-    client.export_pages(args.format, output_dir)
+    if text_formats:
+        print("Fetching translated text ...")
+        pages = client.fetch_texts()
+        if not pages:
+            raise RuntimeError("The project has no pages to export")
+        stem = sanitize(project_name)
+        for fmt in text_formats:
+            path = output_dir / f"{stem}.{fmt}"
+            if fmt == "txt":
+                write_txt(pages, path)
+            else:
+                write_epub(pages, path, title=project_name)
+            print(f"  saved {path}")
+    else:
+        print(f"Downloading rendered pages to {output_dir} ...")
+        client.export_pages(args.format or "webp", output_dir)
 
 
 def main():
@@ -366,9 +511,15 @@ def main():
                              "baberu-ocr", "hayai-ocr"],
                     help="OCR model to select on the server before running "
                          "(default: leave the server's current selection)")
-    ap.add_argument("--format", choices=list(EXPORT_EXTS), default="webp",
+    ap.add_argument("--format", choices=list(EXPORT_EXTS), default=None,
                     help="Download format (default webp). jpeg/webp are lossy "
-                         "at full resolution — much smaller files than png")
+                         "at full resolution — much smaller files than png. "
+                         "Ignored when --text is set")
+    ap.add_argument("--text", default=None, metavar="txt,epub",
+                    help="Comma-separated text output formats: txt and/or epub "
+                         "(e.g. --text txt,epub writes both). Skips image "
+                         "export entirely — the translated text of every page "
+                         "is saved as <project>.txt/.epub instead")
     ap.add_argument("--fresh", action="store_true", default=False,
                     help="Delete an existing project of the same name first, "
                          "instead of failing")
@@ -381,6 +532,18 @@ def main():
 
     if args.recursive and args.resume_project:
         ap.error("--resume-project isn't supported together with --recursive")
+
+    text_formats = None
+    if args.text is not None:
+        text_formats = [f.strip().lower() for f in args.text.split(",") if f.strip()]
+        unknown = [f for f in text_formats if f not in TEXT_FORMATS]
+        if unknown:
+            ap.error(f"Unknown --text format(s) {', '.join(unknown)} — "
+                     f"valid formats: {', '.join(sorted(TEXT_FORMATS))}")
+        if not text_formats:
+            ap.error("--text needs at least one format: txt or epub")
+        if args.format is not None:
+            print(f"Note: --format is ignored with --text (text-only mode).")
 
     base_url = f"http://{args.host}:{args.port}"
     client = KoharuClient(base_url)
@@ -406,14 +569,15 @@ def main():
                 continue
             print(f"\n=== [{idx}/{len(subdirs)}] {sub} -> {output_root / sub.name} ===")
             process_folder(client, args, sub, output_root / sub.name,
-                           project_name=sub.name)
+                           project_name=sub.name, text_formats=text_formats)
     else:
         output_dir = args.output if args.output is not None \
             else Path(f"translated_{args.input.name}")
         project_name = args.project_name if args.project_name is not None \
             else args.input.name
         process_folder(client, args, args.input, output_dir,
-                       project_name=project_name, resume_project=args.resume_project)
+                       project_name=project_name, resume_project=args.resume_project,
+                       text_formats=text_formats)
 
     print("Done.")
 

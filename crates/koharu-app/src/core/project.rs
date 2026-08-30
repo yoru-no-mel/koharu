@@ -179,6 +179,26 @@ pub struct Translation {
     pub language: Option<String>,
 }
 
+/// Text-only projection of a page: the original/translated pairs without any
+/// geometry, rendering, or region data.
+#[derive(Clone, Debug, Serialize, ToSchema, Type)]
+pub struct PageText {
+    #[schema(value_type = uuid::Uuid)]
+    pub id: EntityId,
+    pub label: String,
+    /// Text layers in scene order (the pipeline's reading order); empty when
+    /// the page has no text yet.
+    pub segments: Vec<TextSegment>,
+}
+
+#[derive(Clone, Debug, Serialize, ToSchema, Type)]
+pub struct TextSegment {
+    #[schema(value_type = uuid::Uuid)]
+    pub id: EntityId,
+    pub source: Option<String>,
+    pub translation: Option<String>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema, Type)]
 pub struct Typography {
     pub preferred_font: Option<String>,
@@ -963,6 +983,45 @@ impl Project {
 
     async fn commit(&mut self, patch: koharu_scene::Patch) -> Result<Commit> {
         Ok(self.session.commit(patch).await?)
+    }
+
+    /// Text-only view of one page: original/translated pairs for every text
+    /// layer, in scene order.
+    pub(crate) fn texts(snapshot: &Snapshot, page: EntityId) -> Result<PageText> {
+        let label = snapshot.page(page)?.page()?.label;
+        let mut segments = Vec::new();
+        Self::collect_text_segments(snapshot, page, &mut segments)?;
+        Ok(PageText {
+            id: page,
+            label,
+            segments,
+        })
+    }
+
+    fn collect_text_segments(
+        snapshot: &Snapshot,
+        parent: EntityId,
+        segments: &mut Vec<TextSegment>,
+    ) -> Result<()> {
+        for child in snapshot.children(parent)? {
+            if !Self::is_layer(snapshot, child)? {
+                continue;
+            }
+            if snapshot.component::<SceneTextLayout>(child)?.is_some() {
+                let content = snapshot.text_layer(child)?.content()?;
+                segments.push(TextSegment {
+                    id: content.id(),
+                    source: content.source()?.map(|source| source.text.value),
+                    translation: content
+                        .translation()?
+                        .map(|translation| translation.text.value),
+                });
+            }
+            if snapshot.component::<SceneGroup>(child)?.is_some() {
+                Self::collect_text_segments(snapshot, child, segments)?;
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn page(snapshot: &Snapshot, page: EntityId) -> Result<Page> {
