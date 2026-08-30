@@ -19,10 +19,11 @@ Talks to the real Koharu API (koharu-rpc), mounted at the server root:
     GET  /pages/{id}/export         download one rendered page
     GET  /texts                     original/translated text per page
 
-Translation model / provider / target language are NOT set by this script —
-they come from the server's preferences (~/.koharu/headless.json overlay or
-config.toml). GET /preferences is printed at startup so you can see what
-will be used.
+Models: --detection and --ocr pick from the fixed choices; --translation
+selects any model the server offers (see --list-translation-models). The
+target language and generation settings always come from the server's
+preferences (~/.koharu/headless.json overlay or config.toml). GET
+/preferences is printed at startup so you can see what will be used.
 
 Usage:
     pip install requests
@@ -38,6 +39,12 @@ Usage:
 
     # text-only: skip image export, save the translation as txt AND epub
     python manga.py testing_novel --recursive --text txt,epub
+
+    # pick models: detection, ocr, and any translation model on the server
+    python manga.py testing --detection comic-text-detector --translation gemma-4-uncensored
+
+    # see which translation models the server can use
+    python manga.py --list-translation-models
 
     # run only some stages (default: the full chain)
     python manga.py testing --stages detection,ocr
@@ -140,6 +147,80 @@ class KoharuClient:
         selected = r.json()["pipeline"]
         print(f"Selected detection={selected['detection']['model']} "
               f"ocr={selected['ocr']['model']}")
+
+    # ---- Translation model selection ----
+    def list_translation_models(self):
+        """GET /translation/models — every model the server can translate
+        with, as `provider/model` strings ready for --translation."""
+        r = self.session.get(self._url("/translation/models"), timeout=30)
+        r.raise_for_status()
+        for model in r.json():
+            provider = model["provider"]
+            name = model.get("model") or model["name"]
+            quants = ",".join(q["id"] for q in model.get("quantizations") or [])
+            caps = [c for c, on in (("vision", model.get("vision")),
+                                    ("reasoning", model.get("reasoning"))) if on]
+            print(f"{provider}/{name}  "
+                  f"({'quantizations: ' + quants + '  ' if quants else ''}"
+                  f"{' '.join(caps)})")
+
+    def set_translation_model(self, spec):
+        """Select a translation model via POST /preferences. SPEC is either
+        `model` (matched against model ids and display names) or
+        `provider/model` to disambiguate. The server's available models come
+        from GET /translation/models — quantization defaults to the first
+        listed for the model unless the current selection already picks a
+        valid one."""
+        models = self.session.get(self._url("/translation/models"), timeout=30).json()
+        wanted_provider, wanted_model = (None, spec)
+        if "/" in spec:
+            wanted_provider, _, wanted_model = spec.partition("/")
+        matches = [m for m in models
+                   if (wanted_provider is None or m["provider"] == wanted_provider)
+                   and (m.get("model") == wanted_model or m["name"] == wanted_model)]
+        if not matches:
+            available = "\n".join(f"  {m['provider']}/{m.get('model') or m['name']}"
+                                  for m in models)
+            raise SystemExit(f"No translation model matches {spec!r}. "
+                             f"Available:\n{available}\n(list with --list-translation-models)")
+        if len(matches) > 1:
+            raise SystemExit(
+                f"{spec!r} is ambiguous — matches: "
+                + ", ".join(f"{m['provider']}/{m.get('model') or m['name']}"
+                            for m in matches)
+                + " (use provider/model to disambiguate)")
+        model = matches[0]
+
+        r = self.session.get(self._url("/preferences"), timeout=30)
+        r.raise_for_status()
+        prefs = r.json()
+        current = prefs["pipeline"]["translation"]["model"]
+        quantization = None
+        quant_ids = [q["id"] for q in model.get("quantizations") or []]
+        if quant_ids:
+            if current.get("provider") == model["provider"] \
+                    and current.get("model") == model.get("model") \
+                    and current.get("quantization") in quant_ids:
+                quantization = current["quantization"]
+            else:
+                quantization = quant_ids[0]
+        prefs["pipeline"]["translation"]["model"] = {
+            "provider": model["provider"],
+            "model": model.get("model"),
+            "quantization": quantization,
+            "vision": bool(model.get("vision")),
+            "reasoning": bool(model.get("reasoning")),
+        }
+        r = self.session.post(self._url("/preferences"),
+                              json={"pipeline": prefs["pipeline"],
+                                    "providers": prefs["providers"],
+                                    "typesetting": prefs["typesetting"]},
+                              timeout=30)
+        r.raise_for_status()
+        selected = r.json()["pipeline"]["translation"]["model"]
+        quant = f" quantization={selected['quantization']}" if selected["quantization"] else ""
+        print(f"Selected translation={selected['provider']}/"
+              f"{selected['model'] or selected.get('name', '')}{quant}")
 
     # ---- Projects ----
     def create_project(self, name: str):
@@ -511,6 +592,14 @@ def main():
                              "baberu-ocr", "hayai-ocr"],
                     help="OCR model to select on the server before running "
                          "(default: leave the server's current selection)")
+    ap.add_argument("--translation", default=None, metavar="SPEC",
+                    help="Translation model to select on the server before "
+                         "running, as `model` or `provider/model` (default: "
+                         "leave the server's current selection). See "
+                         "--list-translation-models")
+    ap.add_argument("--list-translation-models", action="store_true", default=False,
+                    help="Print every translation model the server offers "
+                         "(as `provider/model` for --translation) and exit")
     ap.add_argument("--format", choices=list(EXPORT_EXTS), default=None,
                     help="Download format (default webp). jpeg/webp are lossy "
                          "at full resolution — much smaller files than png. "
@@ -548,8 +637,13 @@ def main():
     base_url = f"http://{args.host}:{args.port}"
     client = KoharuClient(base_url)
     client.wait_ready(timeout=args.timeout)
+    if args.list_translation_models:
+        client.list_translation_models()
+        return
     if args.detection or args.ocr:
         client.set_pipeline_models(detection=args.detection, ocr=args.ocr)
+    if args.translation:
+        client.set_translation_model(args.translation)
     client.show_preferences()
 
     if args.recursive:
