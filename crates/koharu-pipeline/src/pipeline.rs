@@ -78,7 +78,20 @@ impl Pipeline {
     /// ready so first requests do not pay the load cost.
     #[tracing::instrument(skip_all)]
     pub async fn warm(&self, stages: impl IntoIterator<Item = Stage>) -> Result<()> {
+        let _execution = self.execution.lock().await;
         self.current.load_full().warm(stages).await
+    }
+
+    /// Releases loaded stage models after in-flight processing has finished.
+    /// The next run loads its configured models on demand.
+    pub async fn unload(&self) {
+        let _execution = self.execution.lock().await;
+        let runner = self.current.load_full();
+        for stage in Stage::ALL {
+            if runner.unload(stage) {
+                tracing::info!(target: "koharu_metrics", metric = "model_unload", stage = %stage);
+            }
+        }
     }
 
     #[tracing::instrument(skip_all)]

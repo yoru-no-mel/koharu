@@ -2,7 +2,7 @@
 rem Starts Koharu in headless mode (HTTP API on http://192.168.0.2:9170).
 rem Binary is expected at D:\Dev\koharu\target\release\koharu.exe
 
-set "KOHAU_EXE=D:\Dev\koharu\target\release\koharu.exe"
+set "KOHAU_EXE=C:\Users\\.koharu\koharu.exe"
 
 if not exist "%KOHAU_EXE%" (
     echo ERROR: koharu.exe not found at %KOHAU_EXE%
@@ -10,7 +10,7 @@ if not exist "%KOHAU_EXE%" (
     pause
     exit /b 1
 )
-
+s
 rem Verbose logging: set RUST_LOG=debug before running if needed
 if "%RUST_LOG%"=="" set "RUST_LOG=info"
 

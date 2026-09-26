@@ -355,6 +355,10 @@ impl App {
             agent.reset().await;
         }
         self.cancel_processing();
+        if let Some(pipeline) = self.pipeline.get() {
+            pipeline.unload().await;
+        }
+        self.processing.inpainting_mask.lock().take();
         let previous = {
             let mut current = self.project.lock().await;
             current.take()

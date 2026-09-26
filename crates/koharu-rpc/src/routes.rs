@@ -103,6 +103,16 @@ pub(crate) async fn get_project(
 }
 
 #[utoipa::path(
+    post,
+    path = "/project/close",
+    responses((status = 204, description = "Active project closed and loaded models released"))
+)]
+pub(crate) async fn close_project(State(app): State<SharedApp>) -> Result<StatusCode, ApiError> {
+    app.close_project().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(
     get,
     path = "/api/v1/pages",
     responses((status = 200, description = "Pages of the active project", body = [PageSummary]))

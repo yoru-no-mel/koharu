@@ -73,6 +73,9 @@ New crate `crates/koharu-rpc` (axum 0.8, utoipa 5, tokio-stream):
 - `GET /api/v1/events`: SSE framing of `App::events()` — event name from the
   `Event` enum's `Display`, full tagged JSON as data, `lagged` frame on
   broadcast overflow, keep-alives on.
+- `POST /project/close` closes the active project and releases loaded
+  pipeline models after any running job stops. Batch clients call it after
+  each project to release memory between chapters.
 - Readiness: middleware returns 503 on all `/api/v1/*` until `App::is_ready()`.
 - `GET /openapi.json` + `cargo run -p koharu-rpc --bin openapi` export the
   utoipa spec (16 paths, DTO schemas incl. the SSE payload types).

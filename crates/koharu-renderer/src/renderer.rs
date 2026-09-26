@@ -240,6 +240,13 @@ impl Renderer {
         self.inner.nodes.lock().entries.clear();
     }
 
+    /// Releases decoded images and retained nodes associated with the closed project.
+    pub fn discard_project_resources(&self) {
+        self.discard_retained_nodes();
+        *self.inner.images.lock() = ImageCache::new();
+        self.inner.image_loads.lock().clear();
+    }
+
     async fn finish(
         &self,
         snapshot: &Snapshot,

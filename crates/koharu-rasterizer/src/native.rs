@@ -106,6 +106,13 @@ impl Rasterizer {
         Self::try_new().map_err(Error::backend)
     }
 
+    /// Releases project image textures and reusable readback targets.
+    pub fn clear_project_resources(&self) {
+        let mut gpu = self.gpu.lock();
+        gpu.compositor.clear_resources();
+        gpu.targets.clear();
+    }
+
     fn try_new() -> AnyResult<Self> {
         let mut context = RenderContext::new();
         let device_id = pollster::block_on(context.device(None))

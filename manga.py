@@ -18,6 +18,7 @@ Talks to the real Koharu API (koharu-rpc), mounted at the server root:
     GET  /events                    SSE stream carrying job progress events
     GET  /pages/{id}/export         download one rendered page
     GET  /texts                     original/translated text per page
+    POST /project/close             release the project and loaded models
 
 Models: --detection and --ocr pick from the fixed choices; --translation
 selects any model the server offers (see --list-translation-models). The
@@ -237,6 +238,11 @@ class KoharuClient:
         r = self.session.post(self._url(f"/projects/{name}/open"), timeout=30)
         r.raise_for_status()
         return r.json()
+
+    def close_project(self):
+        """POST /project/close releases the active project and loaded models."""
+        r = self.session.post(self._url("/project/close"), timeout=600)
+        r.raise_for_status()
 
     def delete_project(self, name: str):
         r = self.session.delete(self._url(f"/projects/{name}"), timeout=30)
@@ -526,36 +532,44 @@ def process_folder(client, args, input_dir: Path, output_dir: Path, project_name
                 pass  # didn't exist — nothing to delete
         client.create_project(project_name)
         print(f"Created project {project_name!r}")
-        client.import_pages(images)
+        try:
+            client.import_pages(images)
+        except BaseException:
+            client.close_project()
+            raise
         print(f"Uploaded {len(images)} page(s)")
 
-    stages = [s.strip().lower() for s in args.stages.split(",") if s.strip()]
-    for s in stages:
-        if s not in ALL_STAGES:
-            raise SystemExit(f"Unknown stage {s!r} — valid stages: {', '.join(ALL_STAGES)}")
-    stages = None if stages == ALL_STAGES else stages
-    print("Pipeline:", "full chain (detect -> ocr -> translate -> inpaint)"
-          if stages is None else " -> ".join(stages))
+    try:
+        stages = [s.strip().lower() for s in args.stages.split(",") if s.strip()]
+        for s in stages:
+            if s not in ALL_STAGES:
+                raise SystemExit(f"Unknown stage {s!r} — valid stages: {', '.join(ALL_STAGES)}")
+        stages = None if stages == ALL_STAGES else stages
+        print("Pipeline:", "full chain (detect -> ocr -> translate -> inpaint)"
+              if stages is None else " -> ".join(stages))
 
-    job_id = client.start_process(stages=stages)
-    client.wait_job(job_id, timeout=args.timeout)
+        job_id = client.start_process(stages=stages)
+        client.wait_job(job_id, timeout=args.timeout)
 
-    if text_formats:
-        print("Fetching translated text ...")
-        pages = client.fetch_texts()
-        if not pages:
-            raise RuntimeError("The project has no pages to export")
-        stem = sanitize(project_name)
-        for fmt in text_formats:
-            path = output_dir / f"{stem}.{fmt}"
-            if fmt == "txt":
-                write_txt(pages, path)
-            else:
-                write_epub(pages, path, title=project_name)
-            print(f"  saved {path}")
-    else:
-        print(f"Downloading rendered pages to {output_dir} ...")
-        client.export_pages(args.format or "webp", output_dir)
+        if text_formats:
+            print("Fetching translated text ...")
+            pages = client.fetch_texts()
+            if not pages:
+                raise RuntimeError("The project has no pages to export")
+            stem = sanitize(project_name)
+            for fmt in text_formats:
+                path = output_dir / f"{stem}.{fmt}"
+                if fmt == "txt":
+                    write_txt(pages, path)
+                else:
+                    write_epub(pages, path, title=project_name)
+                print(f"  saved {path}")
+        else:
+            print(f"Downloading rendered pages to {output_dir} ...")
+            client.export_pages(args.format or "webp", output_dir)
+    finally:
+        client.close_project()
+        print(f"Closed project {resume_project or project_name!r} and released loaded models")
 
 
 def main():
